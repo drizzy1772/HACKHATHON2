@@ -149,9 +149,127 @@ class APFParams:
     k_attract: float = 3.0          # притягання ДОМІНУЄ — веде дрон по безпечному A*-шляху
     k_repulse: float = 3.5          # > k_attract: впритул дерево ПЕРЕМАГАЄ притягання (лікує seed 14)
     influence_radius: float = 2.5   # d0 — реагуємо ЛИШЕ на близькі дерева: гладше (−31% поворотів)
-    lookahead: float = 4.0          # відстань «морквини» вперед по шляху, м
+    lookahead: float = 4.0          # (референсний carrot-chasing; наш трекер його не вживає)
+    look_straight: float = 7.0      # НАШ трекер: lookahead на прямій (кривина 0°)
+    look_turn: float = 2.0          # НАШ трекер: lookahead на «крутому» повороті
+    turn_angle_deg: float = 45.0    # що вважати крутим: grid-A* дає СХОДИНКИ по 45°,
+                                    # кутів 90° на шляху не буває взагалі (виміряно)
+    curve_window: float = 6.0       # на скільки метрів уперед міряємо кривину
+    simplify_eps: float = 0.3       # Дуглас–Пекер: 44 точки -> 6, сходинки геть,
+                                    # лишаються справжні повороти (>0.8 зрізало б усе)
     stuck_boost_factor: float = 3.0 # у скільки разів підсилити притягання при застряганні
     stuck_boost_duration: float = 3.0  # тривалість бусту, с
+
+
+class CurvatureTracker:
+    """НАША заміна carrot-chasing: pure-pursuit зі ЗМІННИМ lookahead за кривиною.
+
+    Наданий PathTracker тримає lookahead СТАЛИМ — це компроміс: великий зрізає
+    кути (небезпечно), малий гальмує на прямих. Тут lookahead обирається щотіка:
+      кривина = максимальний кут між сегментами у вікні curve_window метрів;
+      0° (прямо) -> look_straight ;  90° (крутий поворот) -> look_turn ;  між — лінійно.
+    Прогрес монотонний (сегмент-курсор не йде назад), як і в референсі.
+    """
+
+    def __init__(self, path: List[Vec2], simplify_eps: float = 0.5):
+        self.path = path                                   # сирий A* (для звірки)
+        # Сходинки grid-A* (зигзаг ▄▀▄▀ по 45°) — АРТЕФАКТ сітки, а не повороти.
+        # Спрямляємо Дугласом–Пекером: лишаються тільки СПРАВЖНІ злами (обхід дерев),
+        # і аж тоді «кривина попереду» означає те, що треба.
+        self.track = self._simplify(path, simplify_eps) if simplify_eps > 0 else list(path)
+        self.seg = 0
+
+    @staticmethod
+    def _simplify(path: List[Vec2], eps: float) -> List[Vec2]:
+        """Дуглас–Пекер: викинути точки, ближчі за eps до хорди."""
+        if len(path) < 3:
+            return list(path)
+        keep = [False] * len(path)
+        keep[0] = keep[-1] = True
+        stack = [(0, len(path) - 1)]
+        while stack:
+            i0, i1 = stack.pop()
+            ax, ay = path[i0]; bx, by = path[i1]
+            dx, dy = bx - ax, by - ay
+            n = math.hypot(dx, dy)
+            worst_d, worst_i = -1.0, -1
+            for k in range(i0 + 1, i1):
+                px, py = path[k]
+                if n < 1e-9:
+                    d = math.hypot(px - ax, py - ay)
+                else:
+                    d = abs(dy * px - dx * py + bx * ay - by * ax) / n   # відстань до прямої
+                if d > worst_d:
+                    worst_d, worst_i = d, k
+            if worst_i > 0 and worst_d > eps:
+                keep[worst_i] = True
+                stack.append((i0, worst_i)); stack.append((worst_i, i1))
+        return [path[i] for i, k in enumerate(keep) if k]
+
+    @staticmethod
+    def _closest_on_segment(p: Vec2, a: Vec2, b: Vec2):
+        ax, ay = a; bx, by = b; px, py = p
+        dx, dy = bx - ax, by - ay
+        L2 = dx * dx + dy * dy
+        if L2 < 1e-9:
+            return a, 0.0
+        tt = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
+        return (ax + tt * dx, ay + tt * dy), tt
+
+    def _advance(self, pos: Vec2, search_ahead: int = 4):
+        best_d, best_seg, best_t = math.inf, self.seg, 0.0
+        hi = min(len(self.track) - 1, self.seg + search_ahead)
+        for i in range(self.seg, hi):
+            proj, tt = self._closest_on_segment(pos, self.track[i], self.track[i + 1])
+            d = math.hypot(pos[0] - proj[0], pos[1] - proj[1])
+            if d < best_d:
+                best_d, best_seg, best_t = d, i, tt
+        self.seg = best_seg
+        return best_seg, best_t
+
+    def _curvature_ahead(self, seg: int, window: float) -> float:
+        """Максимальний кут між сусідніми сегментами у вікні window метрів, рад."""
+        max_ang, dist, i = 0.0, 0.0, seg
+        while i < len(self.track) - 2 and dist < window:
+            a, b, c = self.track[i], self.track[i + 1], self.track[i + 2]
+            v1 = (b[0] - a[0], b[1] - a[1])
+            v2 = (c[0] - b[0], c[1] - b[1])
+            n1, n2 = math.hypot(*v1), math.hypot(*v2)
+            if n1 > 1e-9 and n2 > 1e-9:
+                cos_a = (v1[0] * v2[0] + v1[1] * v2[1]) / (n1 * n2)
+                max_ang = max(max_ang, math.acos(max(-1.0, min(1.0, cos_a))))
+            dist += n1
+            i += 1
+        return max_ang
+
+    def _point_ahead(self, seg: int, tt: float, look: float) -> Vec2:
+        ax, ay = self.track[seg]; bx, by = self.track[seg + 1]
+        px, py = ax + tt * (bx - ax), ay + tt * (by - ay)
+        remaining = look - math.hypot(bx - px, by - py)
+        if remaining <= 0.0:
+            n = math.hypot(bx - px, by - py)
+            f = look / n if n > 1e-9 else 0.0
+            return (px + f * (bx - px), py + f * (by - py))
+        cx, cy, i = bx, by, seg + 1
+        while remaining > 0.0 and i < len(self.track) - 1:
+            nx, ny = self.track[i + 1]
+            seg_len = math.hypot(nx - cx, ny - cy)
+            if seg_len >= remaining:
+                f = remaining / seg_len if seg_len > 1e-9 else 0.0
+                return (cx + f * (nx - cx), cy + f * (ny - cy))
+            remaining -= seg_len
+            cx, cy, i = nx, ny, i + 1
+        return (cx, cy)
+
+    def lookahead_point(self, pos: Vec2, p: APFParams) -> Vec2:
+        if len(self.track) < 2:
+            return self.track[-1] if self.track else pos
+        seg, tt = self._advance(pos)
+        ang = self._curvature_ahead(seg, p.curve_window)
+        turn_ref = math.radians(max(1.0, p.turn_angle_deg))   # 45° на grid-A*, не 90°
+        f = min(1.0, ang / turn_ref)                          # 0 = прямо, 1 = крутий поворот
+        look = p.look_straight + (p.look_turn - p.look_straight) * f
+        return self._point_ahead(seg, tt, look)
 
 
 def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
@@ -182,8 +300,14 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
     Безпечний дефолт зараз: нульовий напрям — дрон горизонтально не рухається."""
     px, py = pos
 
-    # 1. ПРИТЯГАННЯ — до «морквини» (точки попереду на маршруті)
-    carrot = tracker.lookahead_point(pos, p.lookahead)
+    # 1. ПРИТЯГАННЯ — до «морквини». Замість наданого carrot-chasing вживаємо
+    # СВІЙ CurvatureTracker (змінний lookahead за кривиною). Беремо лише маршрут
+    # із наданого tracker; сам трекер живе в boost_state (він persist між тіками).
+    own = boost_state.get("tracker")
+    if own is None or own.path is not tracker.path:
+        own = CurvatureTracker(tracker.path, simplify_eps=p.simplify_eps)
+        boost_state["tracker"] = own
+    carrot = own.lookahead_point(pos, p)
     ax, ay = carrot[0] - px, carrot[1] - py
     da = math.hypot(ax, ay)
     if da > 1e-9:
