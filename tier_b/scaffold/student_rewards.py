@@ -41,8 +41,9 @@ def shaping(phi_new: float, phi_old: float, gamma: float = GAMMA,
     терміналі колізії (інваріант 4): агент зможе «банкувати» накопичений
     потенціал, розбиваючись.
     """
-    # TODO(команда): реалізуйте потенціал-орієнтований shaping.
-    raise NotImplementedError("shaping: заповніть тіло (див. інваріант 4)")
+    # твоя логіка (як у tier_d): у терміналі майбутній потенціал = 0
+    phi_next = 0.0 if terminal else phi_new
+    return gamma * phi_next - phi_old
 
 
 def collision_penalty(depth: float, base: float = COLLISION_BASE,
@@ -82,5 +83,19 @@ def step_reward(phi_prog_new: float, phi_prog_old: float,
     Зважайте на kw-перевизначення: z_min/k_alt, k_omega,
     collision_base/collision_depth_scale/collision_depth_ref.
     """
-    # TODO(команда): зберіть повну винагороду кроку з членів вище.
-    raise NotImplementedError("step_reward: зберіть винагороду з членів вище")
+    # база + два потенціал-shaping (той самий terminal!) + штрафи + умовні члени
+    r = step_cost
+    r += k_prog * shaping(phi_prog_new, phi_prog_old, gamma, terminal)
+    r += k_gate * shaping(phi_gate_new, phi_gate_old, gamma, terminal)
+    r += altitude_penalty(z, kw.get("z_min", Z_MIN), kw.get("k_alt", K_ALT))
+    r += omega_penalty(omega, kw.get("k_omega", K_OMEGA))
+    if gate_passed:
+        r += gate_bonus
+    if collided:
+        r += collision_penalty(depth,
+                               kw.get("collision_base", COLLISION_BASE),
+                               kw.get("collision_depth_scale", COLLISION_DEPTH_SCALE),
+                               kw.get("collision_depth_ref", COLLISION_DEPTH_REF))
+    if finished:
+        r += finish_bonus
+    return r

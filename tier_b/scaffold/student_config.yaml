@@ -95,34 +95,34 @@ bounds:                   # вихід за межі світу → truncated
 
 ppo:
   n_envs: 8
-  n_steps: null              # TODO(команда) — обґрунтуйте вибір
-  batch_size: null              # TODO(команда) — обґрунтуйте вибір
-  learning_rate: null              # TODO(команда) — обґрунтуйте вибір
+  n_steps: 1024           # кроків/env за rollout: 8·1024=8192 переходів (~1.8 епізоди×8 env)
+  batch_size: 512         # ділить 8192 націло → 16 мінібатчів на епоху
+  learning_rate: 0.0003   # типовий для PPO на неперервному контролі
   gamma: 0.99
   gae_lambda: 0.95
   clip_range: 0.2
-  ent_coef: null              # TODO(команда) — обґрунтуйте вибір
+  ent_coef: 0.0           # неперервний PPO: ентропію тримає log_std, окремий бонус не потрібен
   # виміряно на smoke: std=1 на 4 CTBR-каналах → перекиди і ~60% епізодів
   # закінчуються out-of-bounds за ~1.6 с; старт розвідки біля зависання
   # (std≈0.37) лишає тягу коло g і швидкості в межах ±2 рад/с
-  log_std_init: null              # TODO(команда) — обґрунтуйте вибір
-  net_arch: null              # TODO(команда) — обґрунтуйте вибір
+  log_std_init: -1.0      # exp(-1.0)=0.37 — саме той виміряний безпечний старт розвідки
+  net_arch: [256, 256]    # 2×256 MLP — стандарт для CTBR-контролю
   device: cpu             # виміряно (RunSky): для малих MLP на Apple Silicon CPU швидший за MPS
-  total_steps: null              # TODO(команда) — обґрунтуйте вибір
+  total_steps: 2000000    # стеля бюджету треку (2M кроків)
   checkpoint_every: 100000
 
 sac:
   n_envs: 4               # SAC обмежений градієнтами, не збором; 4 env + gradient_steps=-1
   buffer_size: 1000000    # зберігає канонічне співвідношення 1 update : 1 transition
-  batch_size: null              # TODO(команда) — обґрунтуйте вибір
-  learning_rate: null              # TODO(команда) — обґрунтуйте вибір
-  tau: null              # TODO(команда) — обґрунтуйте вибір
-  learning_starts: null              # TODO(команда) — обґрунтуйте вибір
+  batch_size: 256         # стандарт SAC для неперервного контролю
+  learning_rate: 0.0003   # типовий SAC
+  tau: 0.005              # м'яке оновлення target-мереж (стандарт SAC)
+  learning_starts: 10000  # наповнити буфер випадковими діями перед стартом навчання
   train_freq: 1
   gradient_steps: -1
-  net_arch: null              # TODO(команда) — обґрунтуйте вибір
+  net_arch: [256, 256]    # 2×256 MLP
   device: cpu
-  total_steps: null              # TODO(команда) — обґрунтуйте вибір
+  total_steps: 2000000    # стеля бюджету треку (2M кроків)
   checkpoint_every: 100000
 
 eval:
