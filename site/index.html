@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>AI SkyRun · Досягнення</title>
+  <link rel="stylesheet" href="css/minecraft.css" />
+</head>
+<body>
+  <div id="viewport">
+    <div id="board"></div>
+  </div>
+
+  <header class="hud">
+    <div class="h-title">AI SKYRUN HACKATHON</div>
+    <div id="rating-main">Твій рейтинг: 0 SP</div>
+    <div id="rating-weighted">З престижем: 0 SP</div>
+    <div id="rating-tiers"></div>
+  </header>
+
+  <nav class="hud-links">
+    <a class="mc-btn book-btn" href="guide.html">
+      <img src="assets/Knowledge_Book_JE2.webp" alt="" class="btn-book" />
+      Довідник
+    </a>
+  </nav>
+
+  <div class="legend-bar">
+    <span class="li"><img class="sw-wool" src="assets/green wool.webp" alt="" />відтворити</span>
+    <span class="li"><img class="sw-wool" src="assets/orange wool.webp" alt="" />вдосконалити</span>
+    <span class="li"><img class="sw-wool" src="assets/violet wool.webp" alt="" />концептуально</span>
+    <span class="li"><img class="sw-wool" src="assets/red wool.webp" alt="" />нові проблеми</span>
+    <span class="li"><img class="sw-wool" src="assets/Blue_Wool.webp" alt="" />compute-ризик</span>
+    <span class="li note">жовта рамка = невиконано · сіра = виконано</span>
+  </div>
+
+  <div id="tip"></div>
+
+  <div id="modal" data-open="0">
+    <div class="m-box">
+      <button id="m-close" title="Закрити">✕</button>
+      <div class="m-head">
+        <h2 id="m-title"></h2>
+        <span id="m-tier"></span>
+      </div>
+      <div class="m-badges">
+        <span id="m-color"></span>
+        <span id="m-state"></span>
+        <span id="m-sp"></span>
+      </div>
+      <div id="m-body"></div>
+      <div class="m-metric-k">Критерій виконання</div>
+      <code id="m-metric"></code>
+      <p id="m-parents"></p>
+      <button id="m-toggle">Позначити виконаною</button>
+    </div>
+  </div>
+
+  <script type="module" src="js/map.js"></script>
+</body>
+</html>

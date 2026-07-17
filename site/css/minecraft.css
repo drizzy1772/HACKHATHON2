@@ -1,0 +1,375 @@
+/* AI SkyRun — Minecraft advancements UI. Шрифт: Monocraft (OFL, IdreesInc).
+   Рамки ачівок — піксель-арт спрайти з map.js (canvas), тут лише позиціювання. */
+
+@font-face {
+  font-family: "Monocraft";
+  src: url("../assets/fonts/Monocraft.ttf") format("truetype");
+  font-weight: 400;
+}
+@font-face {
+  font-family: "Monocraft";
+  src: url("../assets/fonts/Monocraft-Bold.ttf") format("truetype");
+  font-weight: 700;
+}
+
+:root { --outline: #000; }
+
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font-family: "Monocraft", "Courier New", monospace;
+  color: #fff;
+  overflow: hidden;
+  background: #2a4a1e;
+}
+
+/* ── вьюпорт із полем трав'яних блоків (текстура з map.js) ── */
+#viewport {
+  position: fixed;
+  inset: 0;
+  overflow: auto;
+  image-rendering: pixelated;
+}
+#board { position: relative; }
+
+/* ── лінії: біла серцевина + чорне піксельне обведення, без градієнтів ── */
+#wires { position: absolute; inset: 0; pointer-events: none; }
+#wires path { shape-rendering: crispEdges; stroke-linecap: butt; stroke-linejoin: miter; }
+.wire-out { fill: none; stroke: var(--outline); stroke-width: 10; }
+.wire-in  { fill: none; stroke: #fff; stroke-width: 4; }
+
+/* ── рамки ачівок: спрайти з reference3, піксельний масштаб ── */
+.node {
+  position: absolute;
+  padding: 0;
+  border: none;
+  cursor: pointer;
+  background: transparent center / contain no-repeat;
+  image-rendering: pixelated;
+  z-index: 2;
+}
+.node:hover { transform: scale(1.1); z-index: 5; }
+
+/* іконка-вовна за кольором статусу задачі — розмір як предмет у грі (~55% рамки) */
+.node .slot {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 38px;
+  height: 38px;
+  transform: translate(-50%, -50%);
+  background: transparent center / contain no-repeat;
+  image-rendering: auto;
+  pointer-events: none;
+}
+.node.core { z-index: 4; filter: hue-rotate(225deg) saturate(1.15); }
+.node.core:hover { filter: hue-rotate(225deg) saturate(1.15); }
+
+/* ── підписи гілок ── */
+.branch-label {
+  position: absolute;
+  transform: translateX(-50%);
+  font-weight: 700;
+  font-size: 21px;
+  color: #ffe97d;
+  text-shadow: 2px 2px 0 var(--outline);
+  white-space: nowrap;
+  z-index: 3;
+  pointer-events: none;
+}
+
+/* ── HUD: рейтинг ── */
+.hud {
+  position: fixed;
+  top: 14px;
+  left: 14px;
+  z-index: 20;
+  background: rgba(12, 10, 6, .85);
+  border: 3px solid var(--outline);
+  box-shadow: inset 0 0 0 2px #5a4a1e;
+  padding: 12px 16px;
+  max-width: 400px;
+}
+.hud .h-title { font-weight: 700; font-size: 17px; color: #ffe97d; text-shadow: 2px 2px 0 var(--outline); }
+#rating-main { font-size: 20px; margin-top: 8px; text-shadow: 2px 2px 0 var(--outline); }
+#rating-weighted { font-size: 15px; color: #a4e786; margin-top: 3px; text-shadow: 2px 2px 0 var(--outline); }
+#rating-tiers { font-size: 14px; color: #cfcfcf; margin-top: 8px; text-shadow: 2px 2px 0 var(--outline); }
+
+/* кнопки */
+.hud-links { position: fixed; top: 14px; right: 14px; z-index: 20; display: flex; gap: 8px; }
+.mc-btn {
+  display: inline-block;
+  font-family: inherit;
+  font-size: 16px;
+  color: #fff;
+  text-decoration: none;
+  text-shadow: 2px 2px 0 #383838;
+  background: #6f6f6f;
+  border: 3px solid var(--outline);
+  box-shadow: inset 3px 3px 0 #a8a8a8, inset -3px -3px 0 #4a4a4a;
+  padding: 9px 14px;
+  cursor: pointer;
+}
+.mc-btn:hover { background: #7d8bbd; box-shadow: inset 3px 3px 0 #b3bfe8, inset -3px -3px 0 #4d5a8a; }
+.book-btn { display: inline-flex; align-items: center; gap: 8px; }
+.btn-book { width: 24px; height: 24px; image-rendering: pixelated; }
+
+/* ══════════ Довідник з фізики ══════════ */
+.guide-page {
+  overflow: auto;
+  background:
+    linear-gradient(rgba(10, 20, 6, .45), rgba(10, 20, 6, .45)),
+    url("../assets/grass.png");
+  background-size: auto, 64px 64px;
+  image-rendering: pixelated;
+}
+.gd-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  background: rgba(12, 10, 6, .92);
+  border-bottom: 3px solid var(--outline);
+}
+.gd-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-weight: 700;
+  font-size: 20px;
+  color: #ffe97d;
+  text-shadow: 2px 2px 0 var(--outline);
+}
+.gd-book { width: 30px; height: 30px; image-rendering: pixelated; }
+.gd-wrap {
+  max-width: 880px;
+  margin: 26px auto 60px;
+  padding: 26px 30px;
+  background: #ecdcb8;              /* «папір» книги */
+  border: 4px solid var(--outline);
+  box-shadow: inset 3px 3px 0 #fff3d6, inset -3px -3px 0 #b89e6a, 0 10px 0 rgba(0,0,0,.35);
+  color: #2b2114;
+}
+.gd-intro {
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 15px; line-height: 1.6; margin: 0 0 16px;
+}
+.gd-filters { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 22px; }
+.gd-chip {
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 13px;
+  color: #fff;
+  text-shadow: 1px 1px 0 #383838;
+  background: #6f6f6f;
+  border: 3px solid var(--outline);
+  box-shadow: inset 2px 2px 0 #a8a8a8, inset -2px -2px 0 #4a4a4a;
+  cursor: pointer;
+}
+.gd-chip.on { background: #4a7a3a; box-shadow: inset 2px 2px 0 #7fb268, inset -2px -2px 0 #2f5124; }
+.gd-sec { margin-bottom: 30px; }
+.gd-sec h2 {
+  font-size: 17px;
+  color: #3a2a10;
+  margin: 0 0 10px;
+  padding-bottom: 6px;
+  border-bottom: 3px solid #c9b183;
+  text-shadow: 1px 1px 0 #fff3d6;
+}
+.gd-sec p {
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 15px; line-height: 1.65; margin: 0 0 10px;
+}
+.gd-sec p code, .gd-apply code {
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: .92em;
+  background: #e0cda0;
+  padding: 1px 5px;
+  border: 1px solid #c9b183;
+}
+.gd-f {
+  display: block;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13.5px;
+  line-height: 1.6;
+  background: #2a2113;
+  color: #ffe6a8;
+  border: 3px solid var(--outline);
+  box-shadow: inset 0 0 0 2px #574427;
+  padding: 12px 15px;
+  margin: 10px 0 12px;
+  white-space: pre;
+  overflow-x: auto;
+}
+.gd-apply {
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 13.5px;
+  line-height: 1.7;
+  background: #e4d3a8;
+  border-left: 5px solid #8a6f3e;
+  padding: 9px 13px;
+}
+.gd-tag {
+  display: inline-block;
+  font-family: "Monocraft", monospace;
+  font-size: 11px;
+  font-weight: 700;
+  color: #fff;
+  padding: 2px 7px;
+  margin-right: 4px;
+  border: 2px solid var(--outline);
+  text-shadow: 1px 1px 0 rgba(0,0,0,.45);
+}
+.gd-tag[data-t="D"] { background: #2f9e44; }
+.gd-tag[data-t="C"] { background: #e8a300; }
+.gd-tag[data-t="B"] { background: #cf222e; }
+.gd-tag[data-t="A"] { background: #8250df; }
+.gd-foot {
+  margin-top: 34px;
+  padding-top: 12px;
+  border-top: 3px solid #c9b183;
+  font-size: 12px;
+  color: #6b5a3a;
+  text-align: center;
+}
+@media (max-width: 720px) {
+  .gd-wrap { margin: 12px; padding: 18px 16px; }
+  .gd-title { font-size: 16px; }
+}
+
+/* ── легенда кольорів ── */
+.legend-bar {
+  position: fixed;
+  left: 14px;
+  bottom: 14px;
+  z-index: 20;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 16px;
+  background: rgba(12, 10, 6, .85);
+  border: 3px solid var(--outline);
+  box-shadow: inset 0 0 0 2px #5a4a1e;
+  padding: 11px 15px;
+  font-size: 14px;
+  max-width: calc(100vw - 28px);
+}
+.legend-bar .li { display: flex; align-items: center; gap: 7px; text-shadow: 2px 2px 0 var(--outline); }
+.legend-bar .sw-wool { width: 20px; height: 20px; object-fit: contain; }
+.legend-bar .note { color: #bdbdbd; }
+
+/* ── тултип: золота плашка заголовка + темно-бурштинове тіло (reference4) ── */
+#tip {
+  display: none;
+  position: fixed;
+  z-index: 40;
+  max-width: 340px;
+  background: #2a1d06;
+  border: 3px solid #14100a;
+  padding: 0;
+  pointer-events: none;
+}
+.tip-title {
+  background: #d8a33b;
+  color: #241703;
+  font-weight: 700;
+  font-size: 16px;
+  padding: 8px 11px;
+  box-shadow: inset 0 -3px 0 #a87c22;
+}
+.tip-meta { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #cbb88a; margin: 8px 11px 0; }
+.tip-meta .tip-sw { width: 12px; height: 12px; border: 2px solid var(--outline); }
+.tip-text {
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px; color: #f5e9c8; margin: 6px 11px 11px; line-height: 1.5;
+}
+
+/* ── модалка (класичний сірий екран MC) ── */
+#modal {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  background: rgba(0, 0, 0, .62);
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+#modal[data-open="1"] { display: flex; }
+.m-box {
+  width: min(620px, 94vw);
+  max-height: 88vh;
+  overflow-y: auto;
+  background: #c6c6c6;
+  border: 4px solid var(--outline);
+  box-shadow: inset 4px 4px 0 #ffffff, inset -4px -4px 0 #555555;
+  color: #2b2b2b;
+  padding: 18px 20px;
+  position: relative;
+}
+.m-head { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; padding-right: 40px; }
+#m-title { margin: 0; font-size: 23px; color: #1c1c1c; }
+#m-tier { font-size: 14px; font-weight: 700; color: #4a4a4a; }
+.m-badges { display: flex; gap: 8px; align-items: center; margin: 10px 0; flex-wrap: wrap; }
+#m-color { color: #fff; font-size: 13px; padding: 3px 9px; border: 2px solid var(--outline); text-shadow: 1px 1px 0 rgba(0,0,0,.5); }
+#m-sp { font-size: 13px; color: #333; }
+#m-state { font-size: 13px; font-weight: 700; padding: 3px 8px; border: 2px solid #8a8a8a; background: #d6d6d6; }
+#m-state[data-state="done"] { color: #1c6b1c; border-color: #1c6b1c; background: #cfe8cf; }
+/* довгі описи — читабельним шрифтом; Monocraft лишається на заголовках/UI */
+#m-body p {
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 15px; line-height: 1.6; margin: 0 0 12px; color: #1f1f1f;
+}
+.m-metric-k { font-size: 12px; font-weight: 700; color: #555; text-transform: uppercase; margin-bottom: 4px; }
+#m-metric {
+  display: block;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 13px;
+  background: #a8a8a8;
+  border: 2px solid #7a7a7a;
+  box-shadow: inset 2px 2px 0 #8e8e8e;
+  padding: 8px 10px;
+  color: #1e1e1e;
+  white-space: pre-wrap;
+}
+#m-parents {
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  font-size: 13px; color: #4a4a4a; margin: 12px 0;
+}
+#m-toggle {
+  width: 100%;
+  font-family: inherit;
+  font-size: 16px;
+  color: #fff;
+  text-shadow: 2px 2px 0 #383838;
+  background: #6f6f6f;
+  border: 3px solid var(--outline);
+  box-shadow: inset 3px 3px 0 #a8a8a8, inset -3px -3px 0 #4a4a4a;
+  padding: 11px;
+  cursor: pointer;
+}
+#m-toggle:hover { background: #6f9450; box-shadow: inset 3px 3px 0 #9cc47e, inset -3px -3px 0 #45632f; }
+#m-close {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  font-family: inherit;
+  font-size: 16px;
+  line-height: 1;
+  color: #fff;
+  text-shadow: 1px 1px 0 #383838;
+  background: #a04040;
+  border: 3px solid var(--outline);
+  box-shadow: inset 2px 2px 0 #cf7a7a, inset -2px -2px 0 #6e2424;
+  width: 32px;
+  height: 32px;
+  cursor: pointer;
+}
+
+@media (max-width: 640px) {
+  .hud { max-width: 240px; padding: 8px 10px; }
+  #rating-main { font-size: 14px; }
+  .legend-bar { font-size: 10px; gap: 6px 10px; }
+}

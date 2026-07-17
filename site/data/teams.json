@@ -1,0 +1,75 @@
+{
+  "note": "Зразковий ростер для демо лідерборда. Кожна команда обирає ОДИН трек. `unlocked` = id розблокованих ачівок (суддівські + auto both). `auto` = входи авто-метрик для формули свого треку (див. js/scoring.js). Організатор редагує цей файл під час події.",
+  "teams": [
+    {
+      "id": "t-d1",
+      "name": "Blind Navigators",
+      "track": "D",
+      "auto": { "success": 1.0, "collision": 0.0, "optimality": 0.96, "sample_eff": 0.82 },
+      "unlocked": ["d-first-flight", "d-astar-oracle", "d-bellman", "d-shaping", "d-tuned", "d-invariants", "d-optimality", "d-sample-eff", "d-alt-rl"]
+    },
+    {
+      "id": "t-d2",
+      "name": "Mulberry Crew",
+      "track": "D",
+      "auto": { "success": 1.0, "collision": 0.02, "optimality": 0.91, "sample_eff": 0.65 },
+      "unlocked": ["d-first-flight", "d-astar-oracle", "d-bellman", "d-shaping", "d-tuned", "d-invariants", "d-wind"]
+    },
+    {
+      "id": "t-d3",
+      "name": "Q-Row Zeros",
+      "track": "D",
+      "auto": { "success": 0.9, "collision": 0.1, "optimality": 0.88, "sample_eff": 0.5 },
+      "unlocked": ["d-first-flight", "d-astar-oracle", "d-bellman", "d-shaping", "d-tuned"]
+    },
+    {
+      "id": "t-c1",
+      "name": "Contour Foxes",
+      "track": "C",
+      "auto": { "status": "FINISHED", "time_norm": 0.78, "smoothness": 0.85, "stuck_count": 0 },
+      "unlocked": ["c-ground", "c-astar", "c-apf", "c-stuck", "c-autopilot", "c-tune", "c-contour", "c-minima"]
+    },
+    {
+      "id": "t-c2",
+      "name": "Carrot Chasers",
+      "track": "C",
+      "auto": { "status": "FINISHED", "time_norm": 0.55, "smoothness": 0.6, "stuck_count": 2 },
+      "unlocked": ["c-ground", "c-astar", "c-apf", "c-stuck", "c-autopilot", "c-tune"]
+    },
+    {
+      "id": "t-c3",
+      "name": "EW Ghosts",
+      "track": "C",
+      "auto": { "status": "TIMEOUT", "time_norm": 0.0, "smoothness": 0.4, "stuck_count": 5 },
+      "unlocked": ["c-ground", "c-astar", "c-apf", "c-stuck"]
+    },
+    {
+      "id": "t-b1",
+      "name": "Bank Angle",
+      "track": "B",
+      "auto": { "level": 5, "bank_deg": 42, "both_algos": true },
+      "unlocked": ["b-real-physics", "b-shaping", "b-step-reward", "b-ppo", "b-sac", "b-no-hacks", "b-multiseed"]
+    },
+    {
+      "id": "t-b2",
+      "name": "PPO Diehards",
+      "track": "B",
+      "auto": { "level": 3, "bank_deg": 8, "both_algos": true },
+      "unlocked": ["b-real-physics", "b-shaping", "b-step-reward", "b-ppo", "b-no-hacks", "b-ppo-plus"]
+    },
+    {
+      "id": "t-a1",
+      "name": "Honest Zero",
+      "track": "A",
+      "auto": { "rmse": 0.18, "rmse_ref": 0.30, "successes": 0, "bounty_sp": 120 },
+      "unlocked": ["a-attitude", "a-dqn", "a-rollout", "a-veto", "a-tabular", "a-hybrid", "a-rmse", "a-thrust"]
+    },
+    {
+      "id": "t-a2",
+      "name": "Knife Edge",
+      "track": "A",
+      "auto": { "rmse": 0.24, "rmse_ref": 0.30, "successes": 0, "bounty_sp": 0 },
+      "unlocked": ["a-attitude", "a-dqn", "a-rollout", "a-veto"]
+    }
+  ]
+}

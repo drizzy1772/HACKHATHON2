@@ -112,7 +112,7 @@ class APFParams:
     """Стартовий шаблон параметрів — поля можна міняти/додавати/видаляти
     вільно, це ЛИШЕ ваш власний тюнинг для compute_desired_direction нижче."""
     k_attract: float = 3.0          # притягання ДОМІНУЄ — веде дрон по безпечному A*-шляху
-    k_repulse: float = 2.0          # відштовхування помірне — лише не дає чіплятись за дерева
+    k_repulse: float = 3.5          # > k_attract: впритул дерево ПЕРЕМАГАЄ притягання (лікує seed 14)
     influence_radius: float = 4.0   # d0 — далі перешкода не відштовхує (≤ lidar_range)
     lookahead: float = 4.0          # відстань «морквини» вперед по шляху, м
     stuck_boost_factor: float = 3.0 # у скільки разів підсилити притягання при застряганні
@@ -160,8 +160,9 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
     rx, ry = 0.0, 0.0
     for dist, ang in zip(lidar, bin_angles):
         if 1e-6 < dist < p.influence_radius:
-            # чим ближче дерево — тим сильніший поштовх (лінійно, 0 на межі)
-            strength = p.k_repulse * (p.influence_radius - dist) / p.influence_radius
+            # класична форма APF: сила ~1/dist -> ∞ впритул, ~0 на межі influence_radius.
+            # Так близьке дерево ЗАВЖДИ перемагає притягання, а далеке не стягує з курсу.
+            strength = p.k_repulse * (1.0 / dist - 1.0 / p.influence_radius)
             rx -= strength * math.cos(ang)          # мінус = ПРОТИ напрямку на дерево
             ry -= strength * math.sin(ang)
     fx += rx

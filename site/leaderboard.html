@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Лідерборд · AI SkyRun</title>
+  <link rel="stylesheet" href="css/skyrun.css" />
+</head>
+<body>
+  <header class="site-head">
+    <div class="wrap">
+      <div class="brand">
+        <a class="back" href="index.html" title="До карти досягнень">←</a>
+        <span class="logo">🛩️</span>
+        <div>
+          <h1>AI SkyRun · Лідерборд</h1>
+          <p class="tagline">Гібридний скоринг: авто-метрики + суддівські бали за ачівки</p>
+        </div>
+      </div>
+      <button id="theme" class="theme-btn" title="Тема">◐</button>
+    </div>
+  </header>
+
+  <main class="wrap">
+    <h2 class="section-title">Треки</h2>
+    <section id="tracks" class="tracks"></section>
+
+    <section class="board">
+      <div class="board-head">
+        <h2 id="board-title" class="section-title">Глобальний рейтинг</h2>
+        <div id="board-switch" class="switch"></div>
+      </div>
+      <div class="table-scroll">
+        <table class="leaderboard">
+          <thead>
+            <tr><th>#</th><th>Команда</th><th>Трек</th><th class="num">Auto SP</th><th class="num">Ачівки SP</th><th class="num">Разом</th></tr>
+          </thead>
+          <tbody id="board-body"></tbody>
+        </table>
+      </div>
+      <p class="hint">Наведіть на клітинку Auto/Ачівки — деталі розкладу балів. Бали редагуються в <code>data/teams.json</code>.</p>
+    </section>
+  </main>
+
+  <footer class="site-foot wrap">
+    <span>AI SkyRun · organizer-kit гейміфікація</span>
+    <span><a href="index.html">← Карта досягнень</a></span>
+  </footer>
+
+  <script src="js/theme.js"></script>
+  <script type="module" src="js/leaderboard.js"></script>
+</body>
+</html>
