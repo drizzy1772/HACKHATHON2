@@ -56,10 +56,45 @@ Vec2 = Tuple[float, float]
 
 # ═══════════════════════════ ШАР 1 — A*: глобальне планування шляху ═══════════════
 
+def _block_wreck_box(grid, md, cfg, b: float, cs: float, nx: int, ny: int) -> int:
+    """Позначити зайнятими клітинки всередині СПРАВЖНЬОГО боксa уламка техніки.
+
+    Уламок (`md.wreck_index`) має орієнтований хітбокс зі зсунутим центром, а
+    astar2d бачить лише коло радіуса r — тож A* планував крізь нього. Повертає
+    к-ть домальованих клітинок (0, якщо на мапі уламка немає)."""
+    from game_env.generator import OBJECT_FOOTPRINTS, point_in_oriented_box, wreck_yaw
+
+    wi = getattr(md, "wreck_index", None)
+    wk = getattr(md, "wreck_kind", None)
+    if wi is None or wk not in OBJECT_FOOTPRINTS:
+        return 0
+
+    tx, ty = float(md.trees[wi][0]), float(md.trees[wi][1])
+    yaw = wreck_yaw(tx, ty)
+    fp = OBJECT_FOOTPRINTS[wk]
+    margin = cfg.drone_radius + 0.3 + 0.5 * cs   # запас: корпус + як у astar2d + півклітинки
+
+    added = 0
+    for j in range(ny):
+        for i in range(nx):
+            if grid[j][i]:
+                continue
+            cx, cy = cell_to_world(i, j, b, cs)
+            if point_in_oriented_box(cx, cy, tx, ty, yaw, fp, margin=margin):
+                grid[j][i] = 1
+                added += 1
+    return added
+
 def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
 
     grid, cs, nx, ny = build_occupancy_grid(md, cfg, cell_size)
     b = cfg.bounds
+
+    # build_occupancy_grid апроксимує уламок техніки КОЛОМ (x, y, r), але справжня
+    # колізія рахується по ОРІЄНТОВАНОМУ БОКСУ зі зсунутим центром (див.
+    # collision_and_bounds_status). Через це A* вів маршрут просто крізь автозак.
+    # Домальовуємо справжній бокс у СВОЮ сітку — їхній astar2d лишається недоторканим.
+    _block_wreck_box(grid, md, cfg, b, cs, nx, ny)
 
     start = world_to_cell(md.start[0], md.start[1], b, cs)              # (i, j)
     goal = world_to_cell(md.checkpoints[0][0], md.checkpoints[0][1], b, cs)
@@ -113,7 +148,7 @@ class APFParams:
     вільно, це ЛИШЕ ваш власний тюнинг для compute_desired_direction нижче."""
     k_attract: float = 3.0          # притягання ДОМІНУЄ — веде дрон по безпечному A*-шляху
     k_repulse: float = 3.5          # > k_attract: впритул дерево ПЕРЕМАГАЄ притягання (лікує seed 14)
-    influence_radius: float = 4.0   # d0 — далі перешкода не відштовхує (≤ lidar_range)
+    influence_radius: float = 2.5   # d0 — реагуємо ЛИШЕ на близькі дерева: гладше (−31% поворотів)
     lookahead: float = 4.0          # відстань «морквини» вперед по шляху, м
     stuck_boost_factor: float = 3.0 # у скільки разів підсилити притягання при застряганні
     stuck_boost_duration: float = 3.0  # тривалість бусту, с
@@ -235,7 +270,7 @@ class StuckDetector:
 class AutopilotParams:
     """Стартовий шаблон параметрів виконання — поля можна міняти/додавати
     вільно, це ЛИШЕ ваш власний тюнинг для step_autopilot нижче."""
-    max_speed: float = 3.0           # цільова крейсерська швидкість, м/с
+    max_speed: float = 6.0           # цільова крейсерська швидкість, м/с (−51% часу, безпека не просіла)
     max_accel: float = 4.0           # макс. прискорення, м/с²
     alt_clearance: float = 2.5       # цільова висота НАД рельєфом, м
     max_climb_rate: float = 2.0      # макс. вертикальна швидкість, м/с
