@@ -1,0 +1,27 @@
+#!/bin/bash
+# Простий лаунчер: подвійний клік у Finder -> Blender відкривається з грою,
+# без консолі/термінала. Шлях до проєкту рахується ВІДНОСНО самого .app
+# (Contents/MacOS/launcher -> вгору 3 рівні), тож застосунок лишається
+# робочим, навіть якщо весь realistic_drone/ перенести чи перейменувати —
+# аби .app лишався прямо в корені проєкту, поруч із blender_manual.py.
+
+HERE="$(cd "$(dirname "$0")/../../.." && pwd)"
+BLENDER="/Applications/Blender.app/Contents/MacOS/Blender"
+SCRIPT="$HERE/blender_manual.py"
+LOG_DIR="$HERE/out"
+LOG="$LOG_DIR/launcher.log"
+
+if [ ! -x "$BLENDER" ]; then
+  osascript -e 'display alert "Blender не знайдено" message "Очікував Blender.app у /Applications. Встанови Blender 5.1+ і спробуй ще раз." as critical' >/dev/null 2>&1
+  exit 1
+fi
+
+if [ ! -f "$SCRIPT" ]; then
+  osascript -e "display alert \"Файл гри не знайдено\" message \"Не знайшов blender_manual.py поруч із застосунком ($HERE).\" as critical" >/dev/null 2>&1
+  exit 1
+fi
+
+mkdir -p "$LOG_DIR"
+"$BLENDER" -P "$SCRIPT" >> "$LOG" 2>&1 &
+
+exit 0

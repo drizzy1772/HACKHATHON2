@@ -1,0 +1,20 @@
+Traceback (most recent call last):
+  File "<string>", line 7, in <module>
+    md = MapGenerator(cfg).build(seed=0)
+  File "/Users/drl-15/Downloads/AI-SkyRun-Hackathon-main/tier_c/game_env/generator.py", line 253, in build
+    terrain = Terrain.generate(self.cfg, seed)
+  File "/Users/drl-15/Downloads/AI-SkyRun-Hackathon-main/tier_c/game_env/terrain.py", line 49, in generate
+    from mathutils import Vector
+ModuleNotFoundError: No module named 'mathutils'
+ERROR conda.cli.main_run:execute(142): `conda run python -c 
+import dataclasses
+from game_env import DEFAULT_CONFIG as CFG
+from game_env.generator import MapGenerator
+import solution
+cfg = CFG
+md = MapGenerator(cfg).build(seed=0)
+path = solution.find_path(md, cfg)
+print('bounds:', cfg.bounds, 'drone_r:', cfg.drone_radius)
+print('дерев:', len(md.trees))
+print('path точок:', None if path is None else len(path))
+` failed. (See above for error)

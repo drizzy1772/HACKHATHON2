@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environment
+.venv/
+venv/
+
+# OS
+.DS_Store
+
+# Editor / tooling
+.vscode/
+.idea/
+
+# Local agent / tool state
+.claude/
+.rtk/
+.mcp.json
+
+# Build artifacts
+build/
+dist/

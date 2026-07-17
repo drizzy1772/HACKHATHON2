@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI SkyRun · Field Scanner (Tier 0)</title>
+<style>
+  :root{
+    --bg:#0e1116; --panel:#161b22; --ink:#e6edf3; --muted:#8b949e; --line:#30363d;
+    --tree:#2f6d4f; --start:#1f6feb; --goal:#d1242f; --apf:#bc4c00; --trap:#cf222e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+       font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+  header{padding:20px 24px;border-bottom:1px solid var(--line)}
+  h1{margin:0;font-size:17px;letter-spacing:.2px}
+  .sub{color:var(--muted);font-size:12.5px;margin-top:4px}
+  main{display:flex;gap:20px;padding:20px 24px;flex-wrap:wrap}
+  canvas{background:#0b0e13;border:1px solid var(--line);border-radius:8px;
+         image-rendering:pixelated;max-width:100%}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+         padding:16px;min-width:270px;flex:1}
+  label{display:block;margin:12px 0 4px;font-size:12px;color:var(--muted)}
+  input[type=range]{width:100%}
+  .row{display:flex;justify-content:space-between;font-variant-numeric:tabular-nums}
+  button{background:#21262d;color:var(--ink);border:1px solid var(--line);
+         border-radius:6px;padding:7px 12px;cursor:pointer;font-size:12.5px;margin-right:6px}
+  button:hover{background:#30363d}
+  .stat{font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--muted)}
+  .stat b{color:var(--ink)}
+  .warn{margin-top:14px;padding:9px 11px;border-left:3px solid var(--trap);
+        background:#1d1416;border-radius:4px;font-size:12px;color:#f0c9cc}
+  code{background:#0b0e13;padding:1px 5px;border-radius:4px;font-size:11.5px}
+  .legend{display:flex;gap:14px;flex-wrap:wrap;margin-top:10px;font-size:11.5px;color:var(--muted)}
+  .dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>AI SkyRun · Field Scanner — Tier 0</h1>
+  <div class="sub">Штучне потенціальне поле (APF): <code>U = U_att + U_rep</code>, політ по <code>−∇U</code>.
+    Ця поверхня задана руками. У Tier 1 її <em>виростить</em> Q-learning з винагороди.</div>
+</header>
+
+<main>
+  <div>
+    <canvas id="cv" width="620" height="620"></canvas>
+    <div class="legend">
+      <span><i class="dot" style="background:var(--start)"></i>A (старт)</span>
+      <span><i class="dot" style="background:var(--goal)"></i>B (ціль)</span>
+      <span><i class="dot" style="background:var(--tree)"></i>дерево</span>
+      <span><i class="dot" style="background:var(--apf)"></i>шлях −∇U</span>
+      <span><i class="dot" style="background:var(--trap)"></i>локальний мінімум</span>
+    </div>
+  </div>
+
+  <div class="panel">
+    <div class="row"><label style="margin:0">seed</label><span class="stat" id="seedv">0</span></div>
+    <input type="range" id="seed" min="0" max="29" value="0" step="1">
+
+    <div class="row"><label style="margin:0">дерев (N)</label><span class="stat" id="nv">16</span></div>
+    <input type="range" id="n" min="0" max="28" value="16" step="1">
+
+    <div class="row"><label style="margin:0">K_rep (сила відштовхування)</label><span class="stat" id="krv">0.50</span></div>
+    <input type="range" id="krep" min="0" max="3" value="0.5" step="0.05">
+
+    <div class="row"><label style="margin:0">rho_0 (радіус дії)</label><span class="stat" id="rhv">0.60</span></div>
+    <input type="range" id="rho0" min="0.2" max="2" value="0.6" step="0.05">
+
+    <div style="margin-top:14px">
+      <button id="fly">Політ −∇U</button>
+      <button id="reset">Скинути</button>
+    </div>
+
+    <div style="margin-top:14px" class="stat">
+      результат: <b id="outcome">—</b><br>
+      довжина шляху: <b id="len">—</b><br>
+      дерев розміщено: <b id="ntrees">—</b>
+    </div>
+
+    <div class="warn" id="warn" style="display:none">
+      <b>Локальний мінімум.</b> Сума притягання й відштовхування має пастку —
+      дрон зупинився, не дійшовши до B. Саме цю ваду APF знімає RL:
+      оптимальна <code>V(s)</code> — navigation function, у неї лише один мінімум.
+    </div>
+
+    <div class="warn" style="border-left-color:#8250df;background:#16131d;color:#d6ccf0;margin-top:10px">
+      <b>Чесно:</b> APF читає координати дерев. Це картографування, не RL.
+      Табличний Q-learning бачить лише індекс клітинки (інваріант 2).
+    </div>
+  </div>
+</main>
+
+<script>
+// ---------------------------------------------------------------------------
+// mulberry32 — MUST stay bit-identical to env/forest.py (INVARIANT 1).
+// Golden, seed 0: 0.26642920868471265, 0.0003297457005828619, 0.2232720274478197
+// ---------------------------------------------------------------------------
+function mulberry32(a){
+  return function(){
+    var t = a += 0x6D2B79F5;
+    t = Math.imul(t ^ t >>> 15, t | 1);
+    t ^= t + Math.imul(t ^ t >>> 7, t | 61);
+    return ((t ^ t >>> 14) >>> 0) / 4294967296;
+  }
+}
+
+// Constants mirrored from env/constants.py
+const DOMAIN = 10.0, A = [1,1], B = [9,9];
+const BORDER_MARGIN = 0.9, AB_CLEARANCE = 1.1, MIN_TREE_SEP = 0.85, TREE_R = 0.40;
+const K_ATT = 1.0, D_STAR = 4.0;
+
+function dist(p,q){ return Math.hypot(p[0]-q[0], p[1]-q[1]); }
+
+function makeForest(n, seed){
+  const rng = mulberry32(seed);
+  const lo = BORDER_MARGIN, hi = DOMAIN - BORDER_MARGIN, span = hi - lo;
+  const trees = [];
+  let attempts = 0, maxAttempts = 200 * Math.max(n,1);
+  while(trees.length < n && attempts < maxAttempts){
+    attempts++;
+    const t = [lo + rng()*span, lo + rng()*span];
+    if(dist(t,A) < AB_CLEARANCE) continue;
+    if(dist(t,B) < AB_CLEARANCE) continue;
+    let ok = true;
+    for(const o of trees) if(dist(t,o) < MIN_TREE_SEP){ ok = false; break; }
+    if(ok) trees.push(t);
+  }
+  return trees;
+}
+
+// --- APF -------------------------------------------------------------------
+function gradU(x, trees, kRep, rho0){
+  const dv = [x[0]-B[0], x[1]-B[1]];
+  const d = Math.hypot(dv[0], dv[1]);
+  let g;
+  if(d < 1e-9) g = [0,0];
+  else if(d <= D_STAR) g = [K_ATT*dv[0], K_ATT*dv[1]];
+  else g = [D_STAR*K_ATT*dv[0]/d, D_STAR*K_ATT*dv[1]/d];
+
+  for(const t of trees){
+    const diff = [x[0]-t[0], x[1]-t[1]];
+    const dd = Math.hypot(diff[0], diff[1]);
+    const rho = Math.max(dd - TREE_R, 1e-3);
+    if(rho < rho0){
+      const mag = kRep * (1/rho - 1/rho0) / (rho*rho);
+      g = [g[0] - mag*diff[0]/Math.max(dd,1e-9), g[1] - mag*diff[1]/Math.max(dd,1e-9)];
+    }
+  }
+  return g;
+}
+
+function totalU(x, trees, kRep, rho0){
+  const d = dist(x, B);
+  let u = (d <= D_STAR) ? 0.5*K_ATT*d*d : D_STAR*K_ATT*d - 0.5*K_ATT*D_STAR*D_STAR;
+  for(const t of trees){
+    const rho = Math.max(dist(x,t) - TREE_R, 1e-3);
+    if(rho < rho0) u += 0.5*kRep*Math.pow(1/rho - 1/rho0, 2);
+  }
+  return u;
+}
+
+function apfFlight(trees, kRep, rho0){
+  const step = 0.05, maxSteps = 4000, goalTol = 0.3, stallWin = 200, stallEps = 1e-3;
+  let x = [A[0], A[1]];
+  const path = [[x[0], x[1]]];
+  let length = 0;
+  for(let i=0;i<maxSteps;i++){
+    const g = gradU(x, trees, kRep, rho0);
+    const gn = Math.hypot(g[0], g[1]);
+    if(gn < 1e-12) break;
+    let nx = [x[0] - step*g[0]/gn, x[1] - step*g[1]/gn];
+    nx = [Math.min(DOMAIN, Math.max(0, nx[0])), Math.min(DOMAIN, Math.max(0, nx[1]))];
+    length += dist(nx, x);
+    x = nx; path.push([x[0], x[1]]);
+
+    if(dist(x, B) < goalTol) return {success:true, trapped:false, path, length, stall:null};
+    if(path.length > stallWin){
+      const p0 = path[path.length - stallWin];
+      if(dist(x, p0) < stallEps*stallWin)
+        return {success:false, trapped:true, path, length, stall:[x[0],x[1]]};
+    }
+  }
+  return {success:false, trapped:true, path, length, stall:[x[0],x[1]]};
+}
+
+// --- rendering -------------------------------------------------------------
+const cv = document.getElementById('cv'), ctx = cv.getContext('2d');
+const S = cv.width / DOMAIN;
+const px = p => [p[0]*S, cv.height - p[1]*S];
+
+let trees = [], result = null;
+
+function drawField(kRep, rho0){
+  const res = 4, img = ctx.createImageData(cv.width, cv.height);
+  let uMin = Infinity, uMax = -Infinity;
+  const grid = [];
+  for(let j=0;j<cv.height;j+=res){
+    const row = [];
+    for(let i=0;i<cv.width;i+=res){
+      const wx = i/S, wy = (cv.height - j)/S;
+      let u = totalU([wx,wy], trees, kRep, rho0);
+      u = Math.min(u, 40);
+      row.push(u); if(u<uMin)uMin=u; if(u>uMax)uMax=u;
+    }
+    grid.push(row);
+  }
+  for(let j=0;j<cv.height;j++){
+    for(let i=0;i<cv.width;i++){
+      const u = grid[Math.floor(j/res)][Math.floor(i/res)];
+      const t = (u - uMin)/(uMax - uMin + 1e-9);
+      // inferno-ish ramp
+      const r = Math.floor(255*Math.min(1, 1.6*t));
+      const g = Math.floor(180*Math.pow(t,1.9));
+      const b = Math.floor(90*Math.pow(1-t,1.4) + 30*t);
+      const k = 4*(j*cv.width + i);
+      img.data[k]=r; img.data[k+1]=g; img.data[k+2]=b; img.data[k+3]=225;
+    }
+  }
+  ctx.putImageData(img, 0, 0);
+}
+
+function draw(){
+  const kRep = +krep.value, rho0 = +rho0El.value;
+  drawField(kRep, rho0);
+
+  for(const t of trees){
+    const [cx,cy] = px(t);
+    ctx.beginPath(); ctx.arc(cx, cy, TREE_R*S, 0, 2*Math.PI);
+    ctx.fillStyle = '#2f6d4f'; ctx.fill();
+    ctx.strokeStyle = '#1d4531'; ctx.lineWidth = 1; ctx.stroke();
+  }
+
+  if(result){
+    ctx.beginPath();
+    result.path.forEach((p,i) => { const [x,y]=px(p); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+    ctx.strokeStyle = '#bc4c00'; ctx.lineWidth = 2.6; ctx.stroke();
+    if(result.stall){
+      const [x,y] = px(result.stall);
+      ctx.beginPath(); ctx.arc(x,y,7,0,2*Math.PI);
+      ctx.fillStyle = '#cf222e'; ctx.fill();
+      ctx.strokeStyle='#fff'; ctx.lineWidth=1.6; ctx.stroke();
+    }
+  }
+
+  for(const [p,c,r] of [[A,'#1f6feb',7],[B,'#d1242f',9]]){
+    const [x,y] = px(p);
+    ctx.beginPath(); ctx.arc(x,y,r,0,2*Math.PI);
+    ctx.fillStyle=c; ctx.fill(); ctx.strokeStyle='#fff'; ctx.lineWidth=1.8; ctx.stroke();
+  }
+}
+
+// --- wiring ----------------------------------------------------------------
+const seedEl=document.getElementById('seed'), nEl=document.getElementById('n');
+const krep=document.getElementById('krep'), rho0El=document.getElementById('rho0');
+
+function regen(){
+  trees = makeForest(+nEl.value, +seedEl.value);
+  result = null;
+  document.getElementById('seedv').textContent = seedEl.value;
+  document.getElementById('nv').textContent = nEl.value;
+  document.getElementById('krv').textContent = (+krep.value).toFixed(2);
+  document.getElementById('rhv').textContent = (+rho0El.value).toFixed(2);
+  document.getElementById('ntrees').textContent = trees.length;
+  document.getElementById('outcome').textContent = '—';
+  document.getElementById('len').textContent = '—';
+  document.getElementById('warn').style.display='none';
+  draw();
+}
+
+document.getElementById('fly').onclick = () => {
+  result = apfFlight(trees, +krep.value, +rho0El.value);
+  document.getElementById('outcome').textContent =
+    result.success ? 'дійшов до B' : (result.trapped ? 'застряг у локальному мінімумі' : 'не дійшов');
+  document.getElementById('len').textContent = result.length.toFixed(2);
+  document.getElementById('warn').style.display = result.trapped ? 'block' : 'none';
+  draw();
+};
+document.getElementById('reset').onclick = regen;
+[seedEl,nEl,krep,rho0El].forEach(el => el.oninput = regen);
+
+regen();
+</script>
+</body>
+</html>

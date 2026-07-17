@@ -1,0 +1,70 @@
+{
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "permissions": {
+    "allow": [
+      "Bash(just test*)",
+      "Bash(just lint)",
+      "Bash(just check)",
+      "Bash(just --list)",
+      "Bash(pytest *)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git diff -w*)",
+      "Bash(git diff --stat*)",
+      "Bash(git diff --ignore-blank-lines*)",
+      "Bash(git log*)",
+      "Bash(git show*)",
+      "Bash(git branch*)",
+      "Bash(git stash list*)",
+      "Bash(ls *)",
+      "Bash(ls)",
+      "Bash(find * -name *)",
+      "Bash(wc *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(python * --help)",
+      "Bash(python -c *)",
+      "Bash(sed *)",
+      "Bash(grep *)",
+      "Bash(git fetch origin*)",
+      "Bash(git grep*)",
+      "Bash(git diff --name-status*)",
+      "Bash(git diff --name-only*)",
+      "Bash(git diff --shortstat*)",
+      "Bash(git show *:*)",
+      "Bash(git commit*)",
+      "Bash(git push*)",
+      "Bash(git cherry-pick*)",
+      "Bash(git stash push*)",
+      "Bash(git stash pop*)",
+      "Bash(git tag*)",
+      "Bash",
+      "Edit",
+      "Write",
+      "Read",
+      "Glob",
+      "Grep",
+      "TaskOutput",
+      "TaskStop",
+      "KillShell"
+    ],
+    "deny": [
+      "Bash(git push --force*)",
+      "Bash(git reset --hard*)",
+      "Bash(rm -rf *)",
+      "Bash(git commit --amend*)",
+      "Bash(git push origin main*)",
+      "Bash(git push origin master*)",
+      "Bash(git push * main*)",
+      "Bash(git push * master*)"
+    ],
+    "defaultMode": "bypassPermissions",
+    "additionalDirectories": [
+      "/tmp"
+    ]
+  },
+  "plansDirectory": ".claude/plans",
+  "enabledPlugins": {
+    "superpowers@superpowers-dev": true
+  }
+}

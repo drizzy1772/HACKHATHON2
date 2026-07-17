@@ -1,0 +1,12 @@
+# Vендований pygame (34 МБ, бінарний) — не в git, встановлюється окремо
+.pylibs/
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Headless-симуляція: JSON-таблиці траєкторій (артефакти, не код)
+out/
+
+# macOS
+.DS_Store

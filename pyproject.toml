@@ -1,0 +1,13 @@
+[project]
+name = "skyrun"
+version = "0.1.0"
+description = "AI SkyRun — organizer kit for the RL hackathon (grid MDP, A* oracle, tabular Q-learning, APF+residual)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tier_d/admin/tests", "tier_a/admin/tests", "tier_b/admin/tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 100

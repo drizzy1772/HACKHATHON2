@@ -1,0 +1,10 @@
+# Minimal bounds. Freeze exact versions only after the Phase 8 M4 dry-run:
+#   pip freeze > requirements.lock
+numpy>=1.26,<3
+matplotlib>=3.8
+pillow>=10          # GIF writer for the V(s) and 3D-flight animations
+pytest>=8.0
+
+# Tier 3 (optional, never core — no neural nets or GPU in the tabular kit):
+# gymnasium>=0.29
+# torch>=2.2
