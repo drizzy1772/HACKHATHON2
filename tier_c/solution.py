@@ -49,6 +49,7 @@ from dataclasses import dataclass, field
 from typing import List, Optional, Tuple
 
 from astar2d import build_occupancy_grid, cell_to_world, world_to_cell
+from kinematic_autopilot import AutopilotState
 
 Vec2 = Tuple[float, float]
 
@@ -110,10 +111,10 @@ def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
 class APFParams:
     """Стартовий шаблон параметрів — поля можна міняти/додавати/видаляти
     вільно, це ЛИШЕ ваш власний тюнинг для compute_desired_direction нижче."""
-    k_attract: float = 1.0          # база притягання до цілі/морквини
-    k_repulse: float = 6.0          # сила відштовхування від лідара
+    k_attract: float = 3.0          # притягання ДОМІНУЄ — веде дрон по безпечному A*-шляху
+    k_repulse: float = 2.0          # відштовхування помірне — лише не дає чіплятись за дерева
     influence_radius: float = 4.0   # d0 — далі перешкода не відштовхує (≤ lidar_range)
-    lookahead: float = 3.0          # відстань «морквини» вперед по шляху, м
+    lookahead: float = 4.0          # відстань «морквини» вперед по шляху, м
     stuck_boost_factor: float = 3.0 # у скільки разів підсилити притягання при застряганні
     stuck_boost_duration: float = 3.0  # тривалість бусту, с
 
@@ -168,14 +169,18 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
 
     # 3. ЗАСТРЯГАННЯ — штовхаємо вбік (перпендикулярно до напрямку на ціль)
     is_stuck = stuck.update(t, px, py)
-    if is_stuck:
-        boost_state["until"] = t + p.stuck_boost_duration   # запустити таймер бусту
-    boosted = t < boost_state.get("until", float("-inf"))
-    if boosted:
+    boosting = t < boost_state.get("until", float("-inf"))
+    if is_stuck and not boosting:
+        # ПОЧАТОК ривка: обираємо бік перпендикуляра ОДИН раз і ФІКСУЄМО на весь буст
         perp_x, perp_y = -ay, ax                    # перпендикуляр до напрямку на ціль
-        # обрати бік, що ДАЛІ від дерева (у бік вільного простору)
-        if perp_x * rx + perp_y * ry < 0:
+        if perp_x * rx + perp_y * ry < 0:           # бік, що ДАЛІ від дерева
             perp_x, perp_y = -perp_x, -perp_y
+        boost_state["until"] = t + p.stuck_boost_duration
+        boost_state["perp"] = (perp_x, perp_y)      # запам'ятати напрямок ривка
+        boosting = True
+    boosted = boosting
+    if boosted:
+        perp_x, perp_y = boost_state.get("perp", (-ay, ax))   # той самий бік, без миготіння
         fx += p.k_attract * p.stuck_boost_factor * perp_x
         fy += p.k_attract * p.stuck_boost_factor * perp_y
 
@@ -204,7 +209,23 @@ class StuckDetector:
 
         Безпечний дефолт зараз: завжди False — застрягання ніколи не
         спрацьовує (не критично, поки й сам рух ще не реалізовано)."""
-        return False
+        self._history.append((t, x, y))
+
+        # лишаємо тільки останні window_s секунд
+        cutoff = t - self.window_s
+        self._history = [pt for pt in self._history if pt[0] >= cutoff]
+
+        # чекаємо, поки вікно наповниться на повний window_s (інакше — не суди)
+        if t - self._history[0][0] < self.window_s * 0.9:
+            return False
+
+        # центр міні-зони і найбільший радіус від нього
+        cx = sum(pt[1] for pt in self._history) / len(self._history)
+        cy = sum(pt[2] for pt in self._history) / len(self._history)
+        max_r = max(math.hypot(pt[1] - cx, pt[2] - cy) for pt in self._history)
+
+        # якщо весь рух умістився в коло < radius — дрон тупцює = застряг
+        return max_r < self.radius
 
 
 # ═══════════════════ ШАР 4 — кінематичний автопілот-виконавець ════════════════════
@@ -218,6 +239,8 @@ class AutopilotParams:
     alt_clearance: float = 2.5       # цільова висота НАД рельєфом, м
     max_climb_rate: float = 2.0      # макс. вертикальна швидкість, м/с
     yaw_rate_max: float = 4.0        # макс. кутова швидкість курсу, рад/с
+    slow_radius: float = 3.0         # з якої відстані до дерева починаємо гальмувати, м
+    min_speed_frac: float = 0.25     # мін. частка швидкості впритул до дерева
 
 
 def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
@@ -236,4 +259,43 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
     читають їх напряму).
 
     Безпечний дефолт зараз: стан не змінюється — дрон висить на місці."""
-    return state
+    dx, dy = direction_xy
+    mag = math.hypot(dx, dy)
+
+    # 1. ГОРИЗОНТАЛЬНА ШВИДКІСТЬ — повна в бажаному напрямку, але гальмуємо біля дерев
+    if mag < 1e-9:
+        vx = vy = 0.0
+        speed = 0.0
+    else:
+        dx, dy = dx / mag, dy / mag                     # одиничний напрям
+        slow = 1.0
+        if min_lidar is not None and min_lidar < p.slow_radius:
+            # лінійно: повна швидкість на межі slow_radius → min_speed_frac упритул
+            slow = p.min_speed_frac + (1.0 - p.min_speed_frac) * (min_lidar / p.slow_radius)
+            slow = max(p.min_speed_frac, min(1.0, slow))
+        speed = p.max_speed * slow
+        vx, vy = dx * speed, dy * speed
+
+    # інтегруємо горизонтальну позицію
+    x = state.x + vx * dt
+    y = state.y + vy * dt
+
+    # 2. ВИСОТА НАД РЕЛЬЄФОМ — тримаємо alt_clearance над землею, плавно обтікаючи пагорби
+    target_z = terrain.height_at(x, y) + p.alt_clearance
+    dz_max = p.max_climb_rate * dt
+    dz = max(-dz_max, min(dz_max, target_z - state.z))  # обмежений набір/спуск висоти
+    z = state.z + dz
+    vz = dz / dt if dt > 1e-9 else 0.0
+
+    # 3. КУРС + ВІЗУАЛЬНИЙ НАХИЛ — плавно довертаємось у бік руху, банкуючи в поворот
+    yaw, pitch, roll = state.yaw, state.pitch, state.roll
+    if mag > 1e-9:
+        target_yaw = math.atan2(dy, dx)
+        err = math.atan2(math.sin(target_yaw - yaw), math.cos(target_yaw - yaw))  # найкоротший
+        max_dyaw = p.yaw_rate_max * dt
+        applied = max(-max_dyaw, min(max_dyaw, err))
+        yaw += applied
+        pitch = -0.15 * (speed / p.max_speed)           # ніс униз у русі — «летить уперед»
+        roll = -0.20 * (applied / (max_dyaw + 1e-9))    # крен у бік повороту
+
+    return AutopilotState(x=x, y=y, z=z, vx=vx, vy=vy, vz=vz, yaw=yaw, pitch=pitch, roll=roll)
