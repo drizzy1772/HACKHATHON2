@@ -178,14 +178,17 @@ CHARGE_DWELL_TICKS = 90    # тримаємось на станції ~3 с (90 
 # Старт → ЗАРЯДКА (окрема точка) → АПТЕЧКА (окрема точка, опускаємось+беремо,
 # вона ПРИЛИПАЄ) → ЦІЛЬ (везе людині).
 _BAT = {"level": 100.0, "mode": "to_goal", "charge": None, "pickup": None,
+        "home": None, "done": False,
         "mark": 100, "carrying": False, "dwell": 0, "cdwell": 0}
 
 
 def _mission_reset(path, charge, pickup) -> None:
-    """Новий прогін: повний заряд, дві точки місії, ще не несемо."""
-    _BAT.update(level=100.0, mark=100, carrying=False, dwell=0, cdwell=0)
+    """Новий прогін: повний заряд, точки місії, ще не несемо. home = старт (куди
+    повертатись після доставки), якщо є місія."""
+    _BAT.update(level=100.0, mark=100, carrying=False, dwell=0, cdwell=0, done=False)
     _BAT["charge"] = tuple(charge) if charge else None
     _BAT["pickup"] = tuple(pickup) if pickup else None
+    _BAT["home"] = tuple(path[0]) if (pickup and path and len(path) >= 2) else None
     _BAT["mode"] = "to_charge" if _BAT["charge"] else ("to_pickup" if _BAT["pickup"] else "to_goal")
 
 
@@ -391,8 +394,22 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
             _BAT["mode"] = "grabbing"                        # прибули → опускаємось забирати
     elif mode == "grabbing":
         carrot = pickup                                     # тримаємось над аптечкою
-    else:  # to_goal — несемо аптечку до людини
+    elif mode == "to_goal":                                 # несемо аптечку до людини
         carrot = carrot_goal
+        home = _BAT["home"]
+        if home is not None and math.hypot(goal_pt[0] - px, goal_pt[1] - py) < ARRIVE_R:
+            _BAT["mode"] = "to_home"                         # ДОСТАВИВ → повертаємось додому
+            _BAT["carrying"] = False                         # аптечку віддали людині
+    else:  # to_home — летимо назад на старт ПО ТОМУ Ж безпечному шляху (у зворотному боці)
+        home_tr = boost_state.get("home_tracker")
+        if home_tr is None or boost_state.get("home_src") is not tracker.path:
+            home_tr = CurvatureTracker(list(reversed(tracker.path)), simplify_eps=p.simplify_eps)
+            boost_state["home_tracker"] = home_tr
+            boost_state["home_src"] = tracker.path      # будуємо ОДИН раз, не щотіка
+        carrot = home_tr.lookahead_point(pos, p)
+        home = _BAT["home"]
+        if home is not None and math.hypot(home[0] - px, home[1] - py) < ARRIVE_R:
+            _BAT["done"] = True                              # повернувся додому → місію завершено
 
     ax, ay = carrot[0] - px, carrot[1] - py
     da = math.hypot(ax, ay)

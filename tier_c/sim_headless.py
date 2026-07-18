@@ -140,8 +140,13 @@ def simulate(seed: int, n_trees: int = None, sim_seconds: float = MAX_SIM_SECOND
             state.y += WIND_GUST_M * math.sin(ang)
 
         status = collision_and_bounds_status((state.x, state.y, state.z), md, terrain, cfg)
-        if status == STATUS_RUNNING and math.hypot(state.x - goal[0], state.y - goal[1]) < goal_radius:
-            status = STATUS_FINISHED
+        if status == STATUS_RUNNING:
+            if _solution._BAT.get("home") is not None:
+                # МІСІЯ з поверненням: фініш, коли дрон доставив і ПОВЕРНУВСЯ ДОДОМУ
+                if _solution._BAT.get("done"):
+                    status = STATUS_FINISHED
+            elif math.hypot(state.x - goal[0], state.y - goal[1]) < goal_radius:
+                status = STATUS_FINISHED           # без місії — фініш на цілі (як раніше)
 
         frames.append({
             "t": round(t, 3), "x": round(state.x, 3), "y": round(state.y, 3), "z": round(state.z, 3),
@@ -150,6 +155,7 @@ def simulate(seed: int, n_trees: int = None, sim_seconds: float = MAX_SIM_SECOND
             "lidar": [round(float(v), 2) for v in lidar],
             "status": status, "boosted": bool(boosted),
             "carrying": bool(_solution._BAT.get("carrying", False)),   # для «прилипання» аптечки
+            "delivered": bool(_solution._BAT.get("mode") in ("to_home",) or _solution._BAT.get("done")),
         })
         if status != STATUS_RUNNING:
             break

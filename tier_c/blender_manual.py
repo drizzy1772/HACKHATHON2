@@ -852,12 +852,19 @@ class DRONE_OT_autonomous(bpy.types.Operator):
         # (це й фіксить перезапуск: кадри стартують з carrying=False → аптечка вдома).
         _med = bpy.data.objects.get("Medkit")
         _cross = bpy.data.objects.get("MedkitCrossH")
-        if frame.get("carrying"):
+        if frame.get("carrying"):                    # несемо — під дроном
             if _med is not None:
                 _med.location = (frame["x"], frame["y"], frame["z"] - 0.35)
             if _cross is not None:
                 _cross.location = (frame["x"], frame["y"], frame["z"] - 0.23)
-        else:
+        elif frame.get("delivered"):                 # доставлено — лежить біля людини
+            _d = _RUNTIME.get("medkit_delivered")
+            _dc = _RUNTIME.get("medkit_delivered_cross")
+            if _med is not None and _d is not None:
+                _med.location = _d
+            if _cross is not None and _dc is not None:
+                _cross.location = _dc
+        else:                                        # ще не забрали — на своєму місці
             _home = _RUNTIME.get("medkit_home")
             _chome = _RUNTIME.get("medkit_cross_home")
             if _med is not None and _home is not None:
@@ -966,6 +973,16 @@ def _load_autonomous_map(seed):
     _cross = bpy.data.objects.get("MedkitCrossH")
     _RUNTIME["medkit_home"] = tuple(_med.location) if _med else None
     _RUNTIME["medkit_cross_home"] = tuple(_cross.location) if _cross else None
+    # куди лягає аптечка ПІСЛЯ доставки — на землю біля людини
+    try:
+        _terr = _RUNTIME.get("terrain") or md.terrain(cfg)
+        _gx, _gy = float(md.checkpoints[0][0]), float(md.checkpoints[0][1])
+        _gz = _terr.height_at(_gx + 1.1, _gy)
+        _RUNTIME["medkit_delivered"] = (_gx + 1.1, _gy, _gz + 0.3)
+        _RUNTIME["medkit_delivered_cross"] = (_gx + 1.1, _gy, _gz + 0.42)
+    except Exception:                                # noqa: BLE001
+        _RUNTIME["medkit_delivered"] = None
+        _RUNTIME["medkit_delivered_cross"] = None
     _RUNTIME["trajectory"] = result["frames"]
     _RUNTIME["traj_hz"] = result["meta"]["sim_hz"]
     _RUNTIME["traj_seed"] = seed   # яку мапу вже порахували — щоб «Запустити
@@ -2229,49 +2246,6 @@ def _selfcheck():
     print("SELFCHECK: replay-тік (5 кадрів, телеметрія+лідар) →", "OK" if ok3 else "FAIL")
 
 
-# ── ГОЛОСОВИЙ МІСТ: Blender слухає команди з файлу (їх пише веб-сервер voice/) ──
-_VOICE_CMD_FILE = str(sim_headless.OUT_DIR / "voice_cmd.txt")
-
-
-def _voice_execute(cmd: str):
-    """Виконати голосову команду: лети / новий маршрут / стоп."""
-    c = cmd.strip().lower()
-    try:
-        if c in ("fly", "лети", "старт", "вперед", "полетіли", "go"):
-            if _RUNTIME.get("trajectory") is None:
-                _load_autonomous_map(SEED)
-            bpy.ops.wm.drone_autonomous('INVOKE_DEFAULT')
-            print("ГОЛОС: лети →", c)
-        elif c in ("route", "маршрут", "побудуй", "новий", "новий маршрут", "rebuild"):
-            import random as _r
-            _RUNTIME["running"] = False
-            _load_autonomous_map(_r.randint(0, 100000))     # нова мапа + безпечний A*-маршрут
-            bpy.ops.wm.drone_autonomous('INVOKE_DEFAULT')
-            print("ГОЛОС: новий маршрут →", c)
-        elif c in ("stop", "стоп", "стій", "зупинись"):
-            _RUNTIME["running"] = False
-            print("ГОЛОС: стоп")
-        else:
-            print("ГОЛОС: невідома команда:", c)
-    except Exception as exc:                                 # noqa: BLE001
-        print("ГОЛОС: помилка виконання:", exc)
-
-
-def _voice_poll():
-    """Таймер: раз на 0.4 с читає файл-команду й виконує, тоді видаляє його."""
-    try:
-        import os
-        if os.path.exists(_VOICE_CMD_FILE):
-            with open(_VOICE_CMD_FILE, encoding="utf-8") as f:
-                cmd = f.read()
-            os.remove(_VOICE_CMD_FILE)
-            if cmd.strip():
-                _voice_execute(cmd)
-    except Exception as exc:                                 # noqa: BLE001
-        print("ГОЛОС: помилка опитування:", exc)
-    return 0.4
-
-
 def main():
     if bpy.app.background:
         build_scene(seed=SEED)      # детермінований сід — відтворювана самоперевірка
@@ -2305,7 +2279,6 @@ def main():
 
     _register_hud()
     bpy.app.timers.register(_autostart, first_interval=0.4)
-    bpy.app.timers.register(_voice_poll, first_interval=1.0)   # слухаємо голосові команди
 
 
 if __name__ == "__main__":
