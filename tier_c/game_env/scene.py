@@ -272,6 +272,22 @@ def _build_rain(cfg):
         print("Дощ: не вдалося створити —", exc)
 
 
+def _build_charge_station(md, cfg, terrain):
+    """Маркер зарядної станції (середина маршруту) — світна зелена платформа."""
+    try:
+        import solution                            # верхнього рівня (tier_c на sys.path)
+        sx, sy = solution.charging_station(md, cfg)
+        sz = terrain.height_at(sx, sy)
+        mat = scene.make_material("ChargeStationMat", (0.15, 0.95, 0.35, 1.0))
+        bpy.ops.mesh.primitive_cylinder_add(radius=1.2, depth=0.15,
+                                            location=(sx, sy, sz + 0.08))
+        pad = bpy.context.active_object
+        pad.name = "ChargeStation"
+        pad.data.materials.append(mat)
+    except Exception as exc:                        # noqa: BLE001 — маркер не має ламати сцену
+        print("Зарядна станція: маркер не створено —", exc)
+
+
 def build_environment(md, cfg, terrain):
     """Повне середовище 2e2bc5d: рельєф-меш + ліс + фури-чекпоінти + тематичні перешкоди.
     (Світло/небо й дрон/камери — окремо через animate_drone у launcher'і.)"""
@@ -279,4 +295,5 @@ def build_environment(md, cfg, terrain):
     _build_trees(md, cfg, terrain)
     _build_trucks(md, cfg, terrain)
     _build_obstacles(md, cfg, terrain)
+    _build_charge_station(md, cfg, terrain)        # зелена платформа зарядки
     _build_rain(cfg)                               # ← дощ останнім: збій не зачепить решту

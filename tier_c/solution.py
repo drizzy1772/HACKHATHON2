@@ -124,7 +124,9 @@ def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
                 cur = came_from[cur]
                 cells.append(cur)
             cells.reverse()
-            return [cell_to_world(i, j, b, cs) for (i, j) in cells]
+            world_path = [cell_to_world(i, j, b, cs) for (i, j) in cells]
+            _battery_reset(world_path)             # станція = середина безпечного маршруту
+            return world_path
 
         ci, cj = cur
         for di, dj, step in neighbours:
@@ -143,7 +145,40 @@ def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
                 came_from[(ni, nj)] = cur
                 heapq.heappush(open_heap, (new_g + h(ni, nj), (ni, nj)))
 
+    _battery_reset(None)                           # шляху немає → без станції
     return None                                    # шляху немає → пряма лінія (fallback)
+
+
+# ═══════════════════════════ БАТАРЕЯ + ЗАРЯДНА СТАНЦІЯ ════════════════════════════
+# Дрон витрачає заряд на політ. Якщо поточного заряду НЕ ВИСТАЧАЄ, щоб дійти до
+# цілі, він летить на зарядну станцію (найближча до центру вільна клітинка),
+# заряджається до 100% і продовжує до цілі. Стан живе в модулі — обидві функції
+# (рішення в compute_desired_direction, витрата в step_autopilot) його бачать.
+BATTERY_DRAIN = 2.2        # % заряду на метр шляху  → ~45 м на повний заряд
+BATTERY_CHARGE = 2.0       # % за тік на станції     → ~1.7 с до повного
+BATTERY_RESERVE = 1.15     # запас: треба на 15% більше, ніж пряма відстань до цілі
+BATTERY_LEVELS = (100, 85, 65, 45, 35, 25, 15)     # рівні індикатора
+STATION_ARRIVE = 3.5       # радіус «біля станції», м
+
+# level — %, mode ∈ {to_goal, charging}, station — (x,y) НА маршруті, mark — індикатор
+_BAT = {"level": 100.0, "mode": "to_goal", "station": None, "mark": 100}
+
+
+def _battery_reset(path) -> None:
+    """Новий прогін: повний заряд, режим до цілі, станція = СЕРЕДИНА маршруту.
+    Станція на самому шляху → дрон не з'їжджає в дерева, а заряджається дорогою."""
+    _BAT["level"] = 100.0
+    _BAT["mode"] = "to_goal"
+    _BAT["mark"] = 100
+    _BAT["station"] = tuple(path[len(path) // 2]) if path and len(path) >= 2 else None
+
+
+def charging_station(md, cfg, cell_size: float = 1.0):
+    """Точка зарядки = середина A*-маршруту (для маркера у scene.py)."""
+    path = find_path(md, cfg, cell_size)
+    if path and len(path) >= 2:
+        return tuple(path[len(path) // 2])
+    return (float(md.start[0]), float(md.start[1]))
 
 
 # ═══════════════════ ШАР 2 — APF: реактивне уникнення перешкод ════════════════════
@@ -313,7 +348,27 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
     if own is None or own.path is not tracker.path:
         own = CurvatureTracker(tracker.path, simplify_eps=p.simplify_eps)
         boost_state["tracker"] = own
-    carrot = own.lookahead_point(pos, p)
+    carrot_goal = own.lookahead_point(pos, p)
+    goal_pt = own.track[-1] if own.track else carrot_goal
+
+    # РІШЕННЯ БАТАРЕЇ: дрон НЕ з'їжджає з безпечного маршруту. Коли проходить
+    # станцію (середину шляху) з зарядом, якого не вистачить до цілі — зупиняється
+    # й заряджається на місці, тоді летить далі.
+    lvl = _BAT["level"]
+    station = _BAT["station"]
+    range_m = lvl / BATTERY_DRAIN                            # скільки метрів ще подужаємо
+    d_goal = math.hypot(goal_pt[0] - px, goal_pt[1] - py)
+    d_station = math.hypot(station[0] - px, station[1] - py) if station else float("inf")
+    if _BAT["mode"] == "charging":
+        if lvl >= 99.9:
+            _BAT["mode"] = "to_goal"                         # зарядились — далі до цілі
+        carrot = station                                    # тримаємось на станції (проти вітру)
+    elif station is not None and d_station < STATION_ARRIVE and range_m < d_goal * BATTERY_RESERVE:
+        _BAT["mode"] = "charging"                            # біля станції й заряду мало → заряджаємось
+        carrot = station
+    else:
+        carrot = carrot_goal                                # звичайний БЕЗПЕЧНИЙ політ по маршруту
+
     ax, ay = carrot[0] - px, carrot[1] - py
     da = math.hypot(ax, ay)
     if da > 1e-9:
@@ -475,5 +530,15 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
         yaw += applied
         pitch = -0.15 * (speed / p.max_speed)           # ніс униз у русі — «летить уперед»
         roll = -0.20 * (applied / (max_dyaw + 1e-9))    # крен у бік повороту
+
+    # БАТАРЕЯ: на станції — заряджаємось, інакше — витрачаємо на пройдений шлях
+    if _BAT["mode"] == "charging":
+        _BAT["level"] = min(100.0, _BAT["level"] + BATTERY_CHARGE)
+    else:
+        moved = math.hypot(vx, vy) * dt
+        _BAT["level"] = max(0.0, _BAT["level"] - BATTERY_DRAIN * moved)
+    for m in BATTERY_LEVELS:                         # оновити рівень індикатора
+        if _BAT["mark"] > m >= _BAT["level"]:
+            _BAT["mark"] = m
 
     return AutopilotState(x=x, y=y, z=z, vx=vx, vy=vy, vz=vz, yaw=yaw, pitch=pitch, roll=roll)
