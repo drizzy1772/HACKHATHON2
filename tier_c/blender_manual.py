@@ -423,6 +423,7 @@ def reset_flight():
     _RUNTIME["traj_frame"] = 0
     _RUNTIME["status"] = STATUS_RUNNING
     _RUNTIME["crash_text"] = None
+    _RUNTIME["photo_done"] = False        # новий політ → знову фоткаємо й шлемо в Discord
 
     _ensure_camera_is_active()
 
@@ -2242,9 +2243,48 @@ def _take_photo(frame):
                 o.hide_render = hr
         _RUNTIME["last_photo"] = str(path)
         print("ФОТО збережено:", path)
+        _send_discord(str(path), note)                # надіслати у Discord (якщо заданий вебхук)
         _email_photo(str(path), note)                 # надіслати на пошту (якщо задані креденшли)
     except Exception as exc:                          # noqa: BLE001 — фото не має ламати гру
         print("Фото: помилка —", exc)
+
+
+# >>> ВСТАВ СЮДИ URL СВОГО DISCORD-ВЕБХУКА (Server → Settings → Integrations →
+#     Webhooks → New Webhook → Copy Webhook URL). Або задай env SKYRUN_DISCORD_WEBHOOK.
+DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1528012427940069517/10RnjP8NlqC9U7kSNb0Ku2j5hvAtRH2dTKfAi5PgnSoXNCl_ZGqIfYi7jwsk0nArUf9Z"
+
+
+def _send_discord(path, note):
+    """Надіслати знімок у Discord через вебхук (multipart POST, лише stdlib urllib).
+    Якщо URL не заданий — тихо пропускаємо (демо не залежить від Discord)."""
+    import os
+    url = os.environ.get("SKYRUN_DISCORD_WEBHOOK") or DISCORD_WEBHOOK_URL
+    if not url:
+        print("Discord: пропущено (встав URL у DISCORD_WEBHOOK_URL або задай SKYRUN_DISCORD_WEBHOOK).")
+        return
+    try:
+        import urllib.request
+        with open(path, "rb") as fh:
+            data = fh.read()
+        boundary = "----SkyRunBoundary7f3a9c2e"
+        pre = (
+            "--%s\r\n"
+            "Content-Disposition: form-data; name=\"content\"\r\n\r\n"
+            "%s\r\n"
+            "--%s\r\n"
+            "Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
+            "Content-Type: image/png\r\n\r\n"
+        ) % (boundary, note, boundary, os.path.basename(path))
+        body = pre.encode("utf-8") + data + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+        req = urllib.request.Request(
+            url, data=body,
+            headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary,
+                     # Discord відхиляє дефолтний Python-urllib UA (403) — треба свій
+                     "User-Agent": "SkyRun-Drone/1.0 (https://github.com/drizzy1772)"})
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            print("Discord: знімок надіслано (HTTP %s)" % resp.status)
+    except Exception as exc:                          # noqa: BLE001 — Discord не має ламати гру
+        print("Discord: помилка —", exc)
 
 
 def _email_photo(path, note):
@@ -2261,7 +2301,8 @@ def _email_photo(path, note):
     if not user or not pwd:
         print("Пошта: пропущено (задай SKYRUN_SMTP_USER / SKYRUN_SMTP_PASS, щоб надсилати).")
         return
-    to = os.environ.get("SKYRUN_MAIL_TO", user)
+    # >>> КУДИ НАДСИЛАТИ ФОТО: впиши свою адресу тут (або задай SKYRUN_MAIL_TO) <<<
+    to = os.environ.get("SKYRUN_MAIL_TO", "drlaihakaton16@gmail.com")
     host = os.environ.get("SKYRUN_SMTP_HOST", "smtp.gmail.com")
     port = int(os.environ.get("SKYRUN_SMTP_PORT", "465"))
     try:
@@ -2389,7 +2430,19 @@ def main():
         _selfcheck()
         return
 
+    global _FLIGHT_MODE
+    # Режим і сід можна задати через env (для однорядкових команд запуску):
+    #   SKYRUN_MODE=autonomous  → автономний політ; типово (не задано) — ручний
+    #   SKYRUN_SEED=2026        → фіксована мапа; типово — випадкова
+    if os.environ.get("SKYRUN_MODE", "").lower() in ("auto", "autonomous"):
+        _FLIGHT_MODE = "autonomous"
     seed = _random_seed()           # кожен запуск учасника — нова випадкова мапа
+    _env_seed = os.environ.get("SKYRUN_SEED")
+    if _env_seed:
+        try:
+            seed = int(_env_seed)
+        except ValueError:
+            pass
     build_scene(seed=seed)          # ручний режим (сирий рушій) — типовий старт
 
     for cls in (DRONE_OT_manual, DRONE_OT_autonomous, DRONE_OT_reset,
