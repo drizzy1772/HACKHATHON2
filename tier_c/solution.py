@@ -131,6 +131,12 @@ def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
             ni, nj = ci + di, cj + dj
             if not free(ni, nj):
                 continue
+            # БЕЗ зрізання кутів: забороняємо діагональ ЛИШЕ коли ОБИДВІ ортогональні
+            # клітинки зайняті — саме тоді шлях пройшов би ВПРИТУЛ МІЖ двома деревами.
+            # (Одна зайнята клітинка — діагональ ще має запас з іншого боку, а інфляція
+            #  перешкод його страхує; строгіша заборона робила сітку непрохідною на seed 10.)
+            if di != 0 and dj != 0 and not free(ci + di, cj) and not free(ci, cj + dj):
+                continue
             new_g = g_cost[cur] + step
             if new_g < g_cost.get((ni, nj), math.inf):
                 g_cost[(ni, nj)] = new_g
@@ -434,6 +440,18 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
             slow = p.min_speed_frac + (1.0 - p.min_speed_frac) * (min_lidar / p.slow_radius)
             slow = max(p.min_speed_frac, min(1.0, slow))
         speed = p.max_speed * slow
+
+        # #2: не даємо горизонталі обганяти набір висоти. Пробуємо нахил рельєфу
+        # попереду; якщо він крутіший, ніж max_climb_rate дозволяє на цій швидкості —
+        # ріжемо швидкість, щоб вертикаль встигала (інакше врізались би в схил).
+        probe = max(0.5, speed * dt)
+        ground_here = terrain.height_at(state.x, state.y)
+        ground_ahead = terrain.height_at(state.x + dx * probe, state.y + dy * probe)
+        slope = (ground_ahead - ground_here) / probe          # підйом на метр шляху
+        if slope > 1e-3:
+            speed_cap = p.max_climb_rate / slope              # швидкість, за якої vz встигає
+            speed = min(speed, speed_cap)
+
         vx, vy = dx * speed, dy * speed
 
     # інтегруємо горизонтальну позицію
