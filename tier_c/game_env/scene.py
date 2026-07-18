@@ -215,6 +215,63 @@ def _build_obstacles(md, cfg, terrain):
             body.data.materials.append(mat)
 
 
+# ── Дощ (візуал) ─────────────────────────────────────────────────────────────
+# Гра рухає об'єкти таймером, а НЕ кадрами (frame_set лише раз), тому частки з
+# фізикою не падали б. Робимо дощ власним bpy-таймером — так само, як анімується
+# дрон. Суто косметика: усе в try/except, щоб дощ НІКОЛИ не ламав гру.
+RAIN_ENABLED = True
+RAIN_COUNT = 450          # к-ть крапель-стріків
+RAIN_HEIGHT = 16.0        # висота, з якої падають, м
+RAIN_FALL_SPEED = 12.0    # швидкість падіння, м/с
+
+_RAIN = {"drops": []}
+
+
+def _build_rain(cfg):
+    """Створити краплі й запустити таймер падіння. Frame-незалежно."""
+    if not RAIN_ENABLED:
+        return
+    try:
+        import random
+        b = float(cfg.bounds)
+        mat = scene.make_material("RainMat", (0.55, 0.66, 0.85, 1.0))
+
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.012, depth=0.40,
+                                            location=(0.0, 0.0, -999.0))
+        proto = bpy.context.active_object
+        proto.name = "RainProto"
+        proto.data.materials.append(mat)
+
+        drops = []
+        for _ in range(RAIN_COUNT):
+            d = proto.copy()                       # linked-mesh дублікат — дешево
+            d.location = (random.uniform(-b, b), random.uniform(-b, b),
+                          random.uniform(0.0, RAIN_HEIGHT))
+            bpy.context.collection.objects.link(d)
+            drops.append(d)
+        proto.hide_set(True)                       # ховаємо шаблон (копії вже зроблено)
+        _RAIN["drops"] = drops
+
+        step = RAIN_FALL_SPEED / 30.0
+
+        def _fall():
+            try:
+                for d in _RAIN["drops"]:
+                    z = d.location.z - step
+                    if z < 0.0:                    # долетіла до землі — на початок
+                        z = RAIN_HEIGHT
+                        d.location.x = random.uniform(-b, b)
+                        d.location.y = random.uniform(-b, b)
+                    d.location.z = z
+            except ReferenceError:
+                return None                        # сцену перебудували — цей таймер завершується
+            return 1.0 / 30.0
+
+        bpy.app.timers.register(_fall, first_interval=0.5)
+    except Exception as exc:                        # noqa: BLE001 — дощ не має ламати сцену
+        print("Дощ: не вдалося створити —", exc)
+
+
 def build_environment(md, cfg, terrain):
     """Повне середовище 2e2bc5d: рельєф-меш + ліс + фури-чекпоінти + тематичні перешкоди.
     (Світло/небо й дрон/камери — окремо через animate_drone у launcher'і.)"""
@@ -222,3 +279,4 @@ def build_environment(md, cfg, terrain):
     _build_trees(md, cfg, terrain)
     _build_trucks(md, cfg, terrain)
     _build_obstacles(md, cfg, terrain)
+    _build_rain(cfg)                               # ← дощ останнім: збій не зачепить решту

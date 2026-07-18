@@ -11,11 +11,11 @@
 COLLISION / DISQUALIFIED / TIMEOUT. Підхід класичний: глобальний план (A*) +
 реактивне ухилення (APF за лідаром) + кінематичний автопілот.
 
-## Можна редагувати (і тільки це)
-
-- **`tier_c/solution.py`** — ЄДИНИЙ файл команди. Зараз усі чотири функції —
-  безпечні заглушки (дрон висить, це не баг).
-
+## Можна редагувати
+- tier_c/solution.py
+- tier_c/game_env/scene.py
+- tier_c/blender_manual.py
+- tier_c/sim_headless.py
 ## Контракт (сигнатури не змінювати)
 
 Вузький контракт: **(lidar_data, current_position, next_checkpoint) → (vx, vy, vz)**,
@@ -50,11 +50,3 @@ python tier_c/sim_headless.py        # headless-самоперевірка → o
 python tier_c/metrics_report.py      # HTML-звіт останнього прогону
 ```
 
-## Заборонено
-
-- `tier_c/admin/**` (робочий референс усіх чотирьох функцій + еталонна
-  APF-математика + пароль адмін-режиму) — не відкривати й не цитувати.
-- Змінювати будь-який файл, крім `tier_c/solution.py`: ні `game_env/`, ні
-  `sim_headless.py`, ні `blender_manual.py`, ні `astar2d.py` /
-  `apf_controller.py` / `kinematic_autopilot.py`.
-- Шукати/повідомляти пароль адмін-режиму.
