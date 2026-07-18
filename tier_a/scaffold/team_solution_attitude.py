@@ -13,6 +13,13 @@
 Tier-A — дослідницький трек: можна змінювати будь-що в tier_a/ (агент, env,
 планувальник), КРІМ tier_a/admin/. Інваріанти лишаються: стан = досвід (без
 координат дерев), shaping — лише потенціал-орієнтований з Φ(термінал)=0.
+
+Двофазна місія (зарядна станція)
+---------------------------------
+greedy_rollout_attitude прозоро підтримує як звичайний AttitudeEnv, так і
+ChargingStationEnv. Якщо передано ChargingStationEnv, фаза CHARGING виконується
+автоматично (агент у цей час не діє), решта фаз (FLY_TO_CHARGER, FLY_TO_GOAL)
+керується qnet як завжди.
 """
 
 from __future__ import annotations
@@ -99,27 +106,54 @@ def dqn_update(qnet, target_net, optimizer, batch, gamma):
 
 # --- контракт ----------------------------------------------------------------
 def greedy_rollout_attitude(env, qnet) -> dict:
-    """argmax_a Q(s,a), без дослідження. Так вас оцінюватимуть."""
+    """argmax_a Q(s,a), без дослідження. Так вас оцінюватимуть.
+
+    Прозоро підтримує два типи env:
+    - AttitudeEnv: звичайний односегментний (A→B)
+    - ChargingStationEnv: двофазний (A→CHARGER, зарядка, CHARGER→B)
+      Під час фази CHARGING агент не діє — env автоматично виконує hover.
+    """
+    # --- Визначити чи це ChargingStationEnv ---
+    try:
+        from tier_a.env_attitude.charging_env import ChargingStationEnv, Phase
+        _is_charging_env = isinstance(env, ChargingStationEnv)
+    except ImportError:
+        _is_charging_env = False
+
     obs = env.reset()
     sq = []
-    info = {"goal": False, "collision": False, "departed": False, "loss_of_control": False}
-    for _ in range(2000):
-        with torch.no_grad():
-            a = int(qnet(torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)).argmax(dim=1).item())
-        obs2, r, done, info = env.step(a)
+    info = {"goal": False, "collision": False, "departed": False, "loss_of_control": False,
+            "truncated": False}
+
+    max_steps = 6000 if _is_charging_env else 2000
+
+    for _ in range(max_steps):
+        # Під час зарядки — агент не обирає дію (env hovering автоматично)
+        if _is_charging_env and env.phase == Phase.CHARGING:
+            obs2, r, done, info = env.step(0)  # action ігнорується в CHARGING
+        else:
+            with torch.no_grad():
+                a = int(qnet(torch.as_tensor(obs, dtype=torch.float32).unsqueeze(0)).argmax(dim=1).item())
+            obs2, r, done, info = env.step(a)
+
         sq.append(obs2[0] ** 2 + obs2[1] ** 2)
         obs = obs2
-        if done or info["truncated"]:
+        if done or info.get("truncated", False):
             break
+
     rmse = float(np.sqrt(np.mean(sq))) if sq else 0.0
-    return {
-        "success": bool(info["goal"]),
-        "collision": bool(info["collision"]),
-        "departed": bool(info["departed"] or info["loss_of_control"]),
+    result = {
+        "success": bool(info.get("goal", False)),
+        "collision": bool(info.get("collision", False)),
+        "departed": bool(info.get("departed", False) or info.get("loss_of_control", False)),
         "t": float(env._t_wall),
         "tracking_rmse": rmse,
         "steps": len(sq),
     }
+    # Якщо ChargingStationEnv — додаємо метрики по фазах
+    if _is_charging_env:
+        result["phase_metrics"] = env.phase_metrics()
+    return result
 
 
 def train_attitude(env, episodes: int = 1200, seed: int = 0, eval_every: int = 0, **kwargs):

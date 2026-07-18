@@ -272,20 +272,36 @@ def _build_rain(cfg):
         print("Дощ: не вдалося створити —", exc)
 
 
-def _build_charge_station(md, cfg, terrain):
-    """Маркер зарядної станції (середина маршруту) — світна зелена платформа."""
+def _build_mission_markers(md, cfg, terrain):
+    """Маркери місії: аптечка (червоний куб з хрестом) на предметі + людина на цілі."""
     try:
         import solution                            # верхнього рівня (tier_c на sys.path)
-        sx, sy = solution.charging_station(md, cfg)
+        # аптечка на точці предмета (середина маршруту)
+        sx, sy = solution.mission_pickup(md, cfg)
         sz = terrain.height_at(sx, sy)
-        mat = scene.make_material("ChargeStationMat", (0.15, 0.95, 0.35, 1.0))
-        bpy.ops.mesh.primitive_cylinder_add(radius=1.2, depth=0.15,
-                                            location=(sx, sy, sz + 0.08))
-        pad = bpy.context.active_object
-        pad.name = "ChargeStation"
-        pad.data.materials.append(mat)
-    except Exception as exc:                        # noqa: BLE001 — маркер не має ламати сцену
-        print("Зарядна станція: маркер не створено —", exc)
+        red = scene.make_material("MedkitMat", (0.90, 0.12, 0.12, 1.0))
+        white = scene.make_material("MedkitCross", (0.97, 0.97, 0.97, 1.0))
+        bpy.ops.mesh.primitive_cube_add(size=0.6, location=(sx, sy, sz + 0.3))
+        box = bpy.context.active_object
+        box.name = "Medkit"
+        box.data.materials.append(red)
+        bpy.ops.mesh.primitive_cube_add(size=0.62, location=(sx, sy, sz + 0.42))
+        bar = bpy.context.active_object
+        bar.name = "MedkitCrossH"
+        bar.scale = (1.0, 0.28, 0.18)
+        bar.data.materials.append(white)
+
+        # «людина» на цілі-фурі (синій стовпчик)
+        gx, gy = float(md.checkpoints[0][0]), float(md.checkpoints[0][1])
+        gz = terrain.height_at(gx, gy)
+        blue = scene.make_material("PersonMat", (0.20, 0.45, 0.95, 1.0))
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.28, depth=1.7,
+                                            location=(gx + 1.5, gy, gz + 0.85))
+        person = bpy.context.active_object
+        person.name = "Person"
+        person.data.materials.append(blue)
+    except Exception as exc:                        # noqa: BLE001 — маркери не мають ламати сцену
+        print("Маркери місії: не створено —", exc)
 
 
 def build_environment(md, cfg, terrain):
@@ -295,5 +311,5 @@ def build_environment(md, cfg, terrain):
     _build_trees(md, cfg, terrain)
     _build_trucks(md, cfg, terrain)
     _build_obstacles(md, cfg, terrain)
-    _build_charge_station(md, cfg, terrain)        # зелена платформа зарядки
+    _build_mission_markers(md, cfg, terrain)       # аптечка на предметі + людина на цілі
     _build_rain(cfg)                               # ← дощ останнім: збій не зачепить решту

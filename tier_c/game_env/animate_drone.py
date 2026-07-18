@@ -129,6 +129,18 @@ def add_cameras(drone):
     fpv.location = (0.20, 0.0, 0.05)          # попереду носового конуса, щоб корпус не закривав кадр
     fpv.rotation_euler = (math.pi / 2, 0.0, -math.pi / 2)
 
+    # Додаємо Прожектор для Нічного Бачення (за замовчуванням вимкнений)
+    light_data = bpy.data.lights.new("NightSpot", type="SPOT")
+    light_data.energy = 0.0  # вимкнений вдень
+    light_data.spot_size = math.radians(75)
+    light_data.spot_blend = 0.5
+    light_data.color = (0.9, 1.0, 0.9)
+    spot = bpy.data.objects.new("NightSpot", light_data)
+    bpy.context.collection.objects.link(spot)
+    spot.parent = drone
+    spot.location = (0.20, 0.0, 0.05)
+    spot.rotation_euler = (math.pi / 2, 0.0, -math.pi / 2)
+
     cam_data2 = bpy.data.cameras.new("Chase")
     cam_data2.lens = 50.0
     cam_data2.clip_start = 0.05

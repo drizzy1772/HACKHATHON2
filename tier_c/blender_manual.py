@@ -1200,6 +1200,198 @@ class DRONE_OT_switch_role(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def _setup_compositor_for_vision(mode):
+    scene = bpy.context.scene
+    scene.use_nodes = True
+    tree = scene.node_tree
+    
+    # Очищуємо старі ноди
+    for node in tree.nodes:
+        tree.nodes.remove(node)
+        
+    rl = tree.nodes.new(type="CompositorNodeRLayers")
+    rl.location = (0, 0)
+    
+    comp = tree.nodes.new(type="CompositorNodeComposite")
+    comp.location = (1200, 0)
+    
+    if mode == "DAY":
+        tree.links.new(rl.outputs["Image"], comp.inputs["Image"])
+        
+    elif mode == "NIGHT":
+        # Яскравіше нічне бачення: піднімаємо яскравість (Multiply) і фарбуємо в зелений
+        math_node = tree.nodes.new(type="CompositorNodeMath")
+        math_node.operation = 'MULTIPLY'
+        math_node.inputs[1].default_value = 2.0 # Підсилюємо світло
+        math_node.location = (200, 0)
+
+        mix = tree.nodes.new(type="CompositorNodeMixRGB")
+        mix.blend_type = 'MULTIPLY'
+        mix.inputs[1].default_value = (0.2, 1.0, 0.2, 1.0) # Зелений
+        mix.inputs[0].default_value = 1.0 # Fac
+        mix.location = (400, 0)
+        
+        # Шум
+        noise = tree.nodes.new(type="CompositorNodeTexture")
+        tex = bpy.data.textures.new("NV_Noise", type='NOISE')
+        tex.noise_scale = 0.05
+        noise.texture = tex
+        noise.location = (400, -200)
+
+        mix_noise = tree.nodes.new(type="CompositorNodeMixRGB")
+        mix_noise.blend_type = 'ADD'
+        mix_noise.inputs[0].default_value = 0.1 # Сила шуму
+        mix_noise.location = (600, 0)
+
+        # Сяйво
+        glare = tree.nodes.new(type="CompositorNodeGlare")
+        glare.glare_type = 'GHOSTS'
+        glare.threshold = 0.5
+        glare.location = (800, 0)
+        
+        tree.links.new(rl.outputs["Image"], math_node.inputs[0])
+        tree.links.new(math_node.outputs["Value"], mix.inputs[2])
+        tree.links.new(mix.outputs["Image"], mix_noise.inputs[1])
+        tree.links.new(noise.outputs["Value"], mix_noise.inputs[2])
+        tree.links.new(mix_noise.outputs["Image"], glare.inputs["Image"])
+        tree.links.new(glare.outputs["Image"], comp.inputs["Image"])
+        
+    elif mode == "THERMAL":
+        # Z-depth to thermal color
+        map_value = tree.nodes.new(type="CompositorNodeMapValue")
+        map_value.offset = [-2.0]
+        map_value.size = [0.035]
+        map_value.use_min = True
+        map_value.min = [0.0]
+        map_value.use_max = True
+        map_value.max = [1.0]
+        map_value.location = (300, -200)
+        
+        color_ramp = tree.nodes.new(type="CompositorNodeValToRGB")
+        color_ramp.color_ramp.elements[0].position = 0.0
+        color_ramp.color_ramp.elements[0].color = (1.0, 1.0, 1.0, 1.0) # Близько (Гаряче)
+        color_ramp.color_ramp.elements.new(0.2)
+        color_ramp.color_ramp.elements[1].color = (1.0, 1.0, 0.0, 1.0)
+        color_ramp.color_ramp.elements.new(0.4)
+        color_ramp.color_ramp.elements[2].color = (1.0, 0.0, 0.0, 1.0)
+        color_ramp.color_ramp.elements.new(0.7)
+        color_ramp.color_ramp.elements[3].color = (0.0, 0.0, 1.0, 1.0)
+        color_ramp.color_ramp.elements[1].position = 1.0
+        color_ramp.color_ramp.elements[-1].color = (0.0, 0.0, 0.2, 1.0) # Далеко (Холодно)
+        color_ramp.location = (500, -200)
+        
+        tree.links.new(rl.outputs["Depth"], map_value.inputs["Value"])
+        tree.links.new(map_value.outputs["Value"], color_ramp.inputs["Fac"])
+        tree.links.new(color_ramp.outputs["Image"], comp.inputs["Image"])
+
+
+def update_vision_mode(self, context):
+    mode = self.vision_mode
+    world = bpy.data.worlds.get("World")
+    if world and world.use_nodes:
+        tree = world.node_tree
+        # Очистити ноди світу, окрім Output
+        for node in tree.nodes:
+            if node.type != 'OUTPUT_WORLD':
+                tree.nodes.remove(node)
+                
+        out = tree.nodes.get("World Output") or tree.nodes.new("ShaderNodeOutputWorld")
+        bg = tree.nodes.new("ShaderNodeBackground")
+        tree.links.new(bg.outputs["Background"], out.inputs["Surface"])
+        
+        if mode == "DAY":
+            bg.inputs["Color"].default_value = (0.45, 0.62, 0.85, 1.0)
+        elif mode == "THERMAL":
+            bg.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
+        elif mode == "NIGHT":
+            # Нічне небо з градієнтом (як на картинці: синій горизонт -> темний зеніт)
+            tex_co = tree.nodes.new("ShaderNodeTexCoord")
+            sep = tree.nodes.new("ShaderNodeSeparateXYZ")
+            
+            # Нормаль Z йде від 0 (горизонт) до 1 (зеніт)
+            map_z = tree.nodes.new("ShaderNodeMapRange")
+            map_z.inputs[1].default_value = -0.2 # From Min (трохи нижче горизонту)
+            map_z.inputs[2].default_value = 0.8  # From Max (майже зеніт)
+            
+            sky_ramp = tree.nodes.new("ShaderNodeValToRGB")
+            sky_ramp.color_ramp.elements[0].position = 0.0
+            sky_ramp.color_ramp.elements[0].color = (0.0, 0.4, 0.9, 1.0) # Яскравий синій горизонт
+            sky_ramp.color_ramp.elements[1].position = 1.0
+            sky_ramp.color_ramp.elements[1].color = (0.0, 0.01, 0.05, 1.0) # Темно-синій зеніт
+            
+            # Додаємо зірки через Noise Texture
+            noise = tree.nodes.new("ShaderNodeTexNoise")
+            noise.inputs["Scale"].default_value = 400.0
+            noise.inputs["Detail"].default_value = 10.0
+            
+            star_ramp = tree.nodes.new("ShaderNodeValToRGB")
+            star_ramp.color_ramp.elements[0].position = 0.55
+            star_ramp.color_ramp.elements[0].color = (0, 0, 0, 1)
+            star_ramp.color_ramp.elements[1].position = 0.7
+            star_ramp.color_ramp.elements[1].color = (2.0, 2.5, 3.0, 1.0) # Яскраві блакитнуваті зірки
+            
+            mix = tree.nodes.new("ShaderNodeMixRGB")
+            mix.blend_type = 'ADD'
+            
+            tree.links.new(tex_co.outputs["Normal"], sep.inputs["Vector"])
+            tree.links.new(sep.outputs["Z"], map_z.inputs["Value"])
+            tree.links.new(map_z.outputs["Result"], sky_ramp.inputs["Fac"])
+            
+            tree.links.new(noise.outputs["Fac"], star_ramp.inputs["Fac"])
+            
+            tree.links.new(sky_ramp.outputs["Color"], mix.inputs[1])
+            tree.links.new(star_ramp.outputs["Color"], mix.inputs[2])
+            tree.links.new(mix.outputs["Color"], bg.inputs["Color"])
+                
+    sun = bpy.data.lights.get("Sun")
+    if sun:
+        sun.energy = 3.0 if mode == "DAY" else 0.0
+
+    spot = bpy.data.objects.get("NightSpot")
+    if spot and spot.type == 'LIGHT':
+        spot.data.energy = 2000.0 if mode == "NIGHT" else 0.0
+        spot.data.spot_blend = 0.8 # М'якші краї
+        spot.data.spot_size = math.radians(90) # Ширший кут
+        
+    # Місяць (об'єкт Sphere, що світиться)
+    moon = bpy.data.objects.get("Moon")
+    if mode == "NIGHT":
+        if not moon:
+            bpy.ops.mesh.primitive_uv_sphere_add(segments=32, ring_count=16, radius=10.0, location=(-100, 100, 50))
+            moon = bpy.context.active_object
+            moon.name = "Moon"
+            
+            mat = bpy.data.materials.new(name="MoonMat")
+            mat.use_nodes = True
+            mat.node_tree.nodes["Principled BSDF"].inputs["Emission"].default_value = (1.0, 1.0, 0.8, 1.0)
+            mat.node_tree.nodes["Principled BSDF"].inputs["Emission Strength"].default_value = 5.0
+            moon.data.materials.append(mat)
+            
+            # Додаємо легке заливне світло від місяця
+            moon_light_data = bpy.data.lights.new("MoonLight", type="SUN")
+            moon_light_data.energy = 0.1
+            moon_light_data.color = (0.7, 0.8, 1.0)
+            moon_light = bpy.data.objects.new("MoonLight", moon_light_data)
+            bpy.context.collection.objects.link(moon_light)
+            moon_light.rotation_euler = (math.radians(60), 0.0, math.radians(-45))
+            moon_light.parent = moon
+        else:
+            moon.hide_render = False
+            moon.hide_viewport = False
+            ml = bpy.data.objects.get("MoonLight")
+            if ml and ml.type == 'LIGHT':
+                ml.data.energy = 0.1
+    else:
+        if moon:
+            moon.hide_render = True
+            moon.hide_viewport = True
+            ml = bpy.data.objects.get("MoonLight")
+            if ml and ml.type == 'LIGHT':
+                ml.data.energy = 0.0
+            
+    _setup_compositor_for_vision(mode)
+
+
 class DRONE_PT_panel(bpy.types.Panel):
     """N-панель 3D-в'юпорта, вкладка «Дрон»:
       • Перемикач режиму (Ручний / Автономний)
@@ -1230,6 +1422,13 @@ class DRONE_PT_panel(bpy.types.Panel):
                                   else "Показати APF карту"),
                             icon='FORCE_TURBULENCE',
                             depress=_RUNTIME.get("show_apf", False))
+
+        layout.separator()
+
+        # ── Візуальні режими ────────────────────────────────────────────────
+        box_vision = layout.box()
+        box_vision.label(text="Візуалізація", icon='RESTRICT_VIEW_OFF')
+        box_vision.prop(context.scene, "vision_mode", text="")
 
         layout.separator()
 
@@ -1948,6 +2147,18 @@ def main():
                 DRONE_OT_set_mode,
                 DRONE_OT_switch_role, DRONE_PT_panel):
         bpy.utils.register_class(cls)
+
+    bpy.types.Scene.vision_mode = bpy.props.EnumProperty(
+        name="Vision Mode",
+        description="Select visual mode",
+        items=[
+            ("DAY", "День", "Standard day lighting"),
+            ("NIGHT", "Нічне бачення", "Night vision with spotlight"),
+            ("THERMAL", "Тепловізор", "Thermal imaging")
+        ],
+        default="DAY",
+        update=update_vision_mode
+    )
 
     _register_hud()
     bpy.app.timers.register(_autostart, first_interval=0.4)

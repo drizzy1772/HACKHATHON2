@@ -125,7 +125,7 @@ def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
                 cells.append(cur)
             cells.reverse()
             world_path = [cell_to_world(i, j, b, cs) for (i, j) in cells]
-            _battery_reset(world_path)             # станція = середина безпечного маршруту
+            _mission_reset(world_path)             # предмет = середина безпечного маршруту
             return world_path
 
         ci, cj = cur
@@ -145,7 +145,7 @@ def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
                 came_from[(ni, nj)] = cur
                 heapq.heappush(open_heap, (new_g + h(ni, nj), (ni, nj)))
 
-    _battery_reset(None)                           # шляху немає → без станції
+    _mission_reset(None)                           # шляху немає → без предмета
     return None                                    # шляху немає → пряма лінія (fallback)
 
 
@@ -155,26 +155,27 @@ def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
 # заряджається до 100% і продовжує до цілі. Стан живе в модулі — обидві функції
 # (рішення в compute_desired_direction, витрата в step_autopilot) його бачать.
 BATTERY_DRAIN = 2.2        # % заряду на метр шляху  → ~45 м на повний заряд
-BATTERY_CHARGE = 2.0       # % за тік на станції     → ~1.7 с до повного
-BATTERY_RESERVE = 1.15     # запас: треба на 15% більше, ніж пряма відстань до цілі
+BATTERY_CHARGE = 2.0       # % за тік поки забираємо предмет → заодно підзарядка
 BATTERY_LEVELS = (100, 85, 65, 45, 35, 25, 15)     # рівні індикатора
-STATION_ARRIVE = 3.5       # радіус «біля станції», м
+PICKUP_ARRIVE = 3.5        # радіус «дрон над предметом», м
+GRAB_CLEARANCE = 0.9       # висота над землею під час забору, м (опускаємось)
+GRAB_TICKS = 20            # скільки тіків тримати над предметом (~0.7 с)
 
-# level — %, mode ∈ {to_goal, charging}, station — (x,y) НА маршруті, mark — індикатор
-_BAT = {"level": 100.0, "mode": "to_goal", "station": None, "mark": 100}
-
-
-def _battery_reset(path) -> None:
-    """Новий прогін: повний заряд, режим до цілі, станція = СЕРЕДИНА маршруту.
-    Станція на самому шляху → дрон не з'їжджає в дерева, а заряджається дорогою."""
-    _BAT["level"] = 100.0
-    _BAT["mode"] = "to_goal"
-    _BAT["mark"] = 100
-    _BAT["station"] = tuple(path[len(path) // 2]) if path and len(path) >= 2 else None
+# МІСІЯ: mode ∈ {to_pickup, grabbing, to_goal}. Дрон летить до предмета (аптечки)
+# на маршруті, ОПУСКАЄТЬСЯ, ЗАБИРАЄ (+підзарядка), піднімається й ВЕЗЕ до цілі.
+_BAT = {"level": 100.0, "mode": "to_pickup", "pickup": None, "mark": 100,
+        "carrying": False, "dwell": 0}
 
 
-def charging_station(md, cfg, cell_size: float = 1.0):
-    """Точка зарядки = середина A*-маршруту (для маркера у scene.py)."""
+def _mission_reset(path) -> None:
+    """Новий прогін: повний заряд, предмет = середина маршруту, ще не несемо."""
+    _BAT.update(level=100.0, mark=100, carrying=False, dwell=0)
+    _BAT["pickup"] = tuple(path[len(path) // 2]) if path and len(path) >= 2 else None
+    _BAT["mode"] = "to_pickup" if _BAT["pickup"] else "to_goal"
+
+
+def mission_pickup(md, cfg, cell_size: float = 1.0):
+    """Точка предмета = середина A*-маршруту (для маркера-аптечки у scene.py)."""
     path = find_path(md, cfg, cell_size)
     if path and len(path) >= 2:
         return tuple(path[len(path) // 2])
@@ -351,23 +352,18 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
     carrot_goal = own.lookahead_point(pos, p)
     goal_pt = own.track[-1] if own.track else carrot_goal
 
-    # РІШЕННЯ БАТАРЕЇ: дрон НЕ з'їжджає з безпечного маршруту. Коли проходить
-    # станцію (середину шляху) з зарядом, якого не вистачить до цілі — зупиняється
-    # й заряджається на місці, тоді летить далі.
-    lvl = _BAT["level"]
-    station = _BAT["station"]
-    range_m = lvl / BATTERY_DRAIN                            # скільки метрів ще подужаємо
-    d_goal = math.hypot(goal_pt[0] - px, goal_pt[1] - py)
-    d_station = math.hypot(station[0] - px, station[1] - py) if station else float("inf")
-    if _BAT["mode"] == "charging":
-        if lvl >= 99.9:
-            _BAT["mode"] = "to_goal"                         # зарядились — далі до цілі
-        carrot = station                                    # тримаємось на станції (проти вітру)
-    elif station is not None and d_station < STATION_ARRIVE and range_m < d_goal * BATTERY_RESERVE:
-        _BAT["mode"] = "charging"                            # біля станції й заряду мало → заряджаємось
-        carrot = station
-    else:
-        carrot = carrot_goal                                # звичайний БЕЗПЕЧНИЙ політ по маршруту
+    # МІСІЯ: летимо до предмета (аптечки) на маршруті, опускаємось і забираємо,
+    # тоді веземо до цілі. Дрон НЕ з'їжджає з безпечного A*-шляху.
+    pickup = _BAT["pickup"]
+    d_pick = math.hypot(pickup[0] - px, pickup[1] - py) if pickup else float("inf")
+    if _BAT["mode"] == "grabbing":
+        carrot = pickup                                     # тримаємось над предметом
+    elif _BAT["mode"] == "to_pickup":
+        carrot = pickup if d_pick < p.look_straight else carrot_goal
+        if d_pick < PICKUP_ARRIVE:
+            _BAT["mode"] = "grabbing"                        # прибули → опускаємось забирати
+    else:  # to_goal — несемо предмет до цілі
+        carrot = carrot_goal
 
     ax, ay = carrot[0] - px, carrot[1] - py
     da = math.hypot(ax, ay)
@@ -404,6 +400,11 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
         perp_x, perp_y = boost_state.get("perp", (-ay, ax))   # той самий бік, без миготіння
         fx += p.k_attract * p.stuck_boost_factor * perp_x
         fy += p.k_attract * p.stuck_boost_factor * perp_y
+
+    # 4. ЗУПИНКА НАД ПРЕДМЕТОМ: у режимі забору й дуже близько — глушимо мотори (завис),
+    # щоб дрон спокійно опускався й забирав, а не кружляв на повній швидкості.
+    if _BAT["mode"] == "grabbing" and d_pick < 1.0:
+        return (0.0, 0.0), boosted, carrot
 
     # нормалізувати суму в ОДИНИЧНИЙ вектор
     n = math.hypot(fx, fy)
@@ -513,8 +514,9 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
     x = state.x + vx * dt
     y = state.y + vy * dt
 
-    # 2. ВИСОТА НАД РЕЛЬЄФОМ — тримаємо alt_clearance над землею, плавно обтікаючи пагорби
-    target_z = terrain.height_at(x, y) + p.alt_clearance
+    # 2. ВИСОТА — тримаємо alt_clearance над рельєфом; НАД ПРЕДМЕТОМ опускаємось забрати
+    clear = GRAB_CLEARANCE if _BAT["mode"] == "grabbing" else p.alt_clearance
+    target_z = terrain.height_at(x, y) + clear
     dz_max = p.max_climb_rate * dt
     dz = max(-dz_max, min(dz_max, target_z - state.z))  # обмежений набір/спуск висоти
     z = state.z + dz
@@ -531,9 +533,15 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
         pitch = -0.15 * (speed / p.max_speed)           # ніс униз у русі — «летить уперед»
         roll = -0.20 * (applied / (max_dyaw + 1e-9))    # крен у бік повороту
 
-    # БАТАРЕЯ: на станції — заряджаємось, інакше — витрачаємо на пройдений шлях
-    if _BAT["mode"] == "charging":
+    # МІСІЯ/БАТАРЕЯ: над предметом — опускаємось, ЗАБИРАЄМО (+підзарядка); інакше — витрата
+    if _BAT["mode"] == "grabbing":
         _BAT["level"] = min(100.0, _BAT["level"] + BATTERY_CHARGE)
+        low_enough = (z - terrain.height_at(x, y)) <= GRAB_CLEARANCE + 0.25
+        if low_enough:
+            _BAT["dwell"] += 1
+            if _BAT["dwell"] >= GRAB_TICKS and _BAT["level"] >= 99.9:
+                _BAT["carrying"] = True                  # ЗАБРАЛИ предмет
+                _BAT["mode"] = "to_goal"                 # → веземо до цілі
     else:
         moved = math.hypot(vx, vy) * dt
         _BAT["level"] = max(0.0, _BAT["level"] - BATTERY_DRAIN * moved)
