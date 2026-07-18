@@ -38,6 +38,7 @@ from game_env.generator import (MapGenerator, wreck_yaw, point_in_oriented_box,
 from game_env.lidar2d import binned_lidar_2d, lidar_obstacles_xyr, bin_angles
 from apf_controller import PathTracker              # дано: carrot-chasing утиліта
 from kinematic_autopilot import AutopilotState        # дано: контракт стану дрона
+import solution as _solution                          # для читання _BAT["carrying"]
 from solution import (find_path, StuckDetector, APFParams, compute_desired_direction,
                       AutopilotParams, step_autopilot)
 
@@ -148,6 +149,7 @@ def simulate(seed: int, n_trees: int = None, sim_seconds: float = MAX_SIM_SECOND
             "speed": round(math.hypot(state.vx, state.vy), 3),
             "lidar": [round(float(v), 2) for v in lidar],
             "status": status, "boosted": bool(boosted),
+            "carrying": bool(_solution._BAT.get("carrying", False)),   # для «прилипання» аптечки
         })
         if status != STATUS_RUNNING:
             break

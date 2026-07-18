@@ -276,7 +276,15 @@ def _build_mission_markers(md, cfg, terrain):
     """Маркери місії: аптечка (червоний куб з хрестом) на предметі + людина на цілі."""
     try:
         import solution                            # верхнього рівня (tier_c на sys.path)
-        # аптечка на точці предмета (середина маршруту)
+        # зелена платформа зарядки (окрема точка)
+        cx, cy = solution.mission_charge(md, cfg)
+        cz = terrain.height_at(cx, cy)
+        green = scene.make_material("ChargePadMat", (0.15, 0.95, 0.35, 1.0))
+        bpy.ops.mesh.primitive_cylinder_add(radius=1.2, depth=0.15, location=(cx, cy, cz + 0.08))
+        pad = bpy.context.active_object
+        pad.name = "ChargePad"
+        pad.data.materials.append(green)
+        # аптечка на точці предмета
         sx, sy = solution.mission_pickup(md, cfg)
         sz = terrain.height_at(sx, sy)
         red = scene.make_material("MedkitMat", (0.90, 0.12, 0.12, 1.0))

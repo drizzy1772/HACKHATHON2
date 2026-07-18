@@ -85,68 +85,89 @@ def _block_wreck_box(grid, md, cfg, b: float, cs: float, nx: int, ny: int) -> in
                 added += 1
     return added
 
-def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
+_NEIGHBOURS = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
+               (1, 1, math.sqrt(2)), (1, -1, math.sqrt(2)),
+               (-1, 1, math.sqrt(2)), (-1, -1, math.sqrt(2))]
 
-    grid, cs, nx, ny = build_occupancy_grid(md, cfg, cell_size)
-    b = cfg.bounds
 
-    # build_occupancy_grid апроксимує уламок техніки КОЛОМ (x, y, r), але справжня
-    # колізія рахується по ОРІЄНТОВАНОМУ БОКСУ зі зсунутим центром (див.
-    # collision_and_bounds_status). Через це A* вів маршрут просто крізь автозак.
-    # Домальовуємо справжній бокс у СВОЮ сітку — їхній astar2d лишається недоторканим.
-    _block_wreck_box(grid, md, cfg, b, cs, nx, ny)
-
-    start = world_to_cell(md.start[0], md.start[1], b, cs)              # (i, j)
-    goal = world_to_cell(md.checkpoints[0][0], md.checkpoints[0][1], b, cs)
-
-    def free(i: int, j: int) -> bool:
+def _astar_grid(grid, nx, ny, b, cs, start_cell, goal_cell):
+    """A* між двома клітинками (без зрізання кутів). Світові точки або None."""
+    def free(i, j):
         return 0 <= i < nx and 0 <= j < ny and not grid[j][i]
+    if not free(*start_cell) or not free(*goal_cell):
+        return None
 
-    # оцінка «скільки лишилось до цілі» = пряма відстань у клітинках
-    def h(i: int, j: int) -> float:
-        return math.hypot(i - goal[0], j - goal[1])
-
-    # 8 сусідів: прямий крок коштує 1, діагональний — √2
-    neighbours = [(1, 0, 1.0), (-1, 0, 1.0), (0, 1, 1.0), (0, -1, 1.0),
-                  (1, 1, math.sqrt(2)), (1, -1, math.sqrt(2)),
-                  (-1, 1, math.sqrt(2)), (-1, -1, math.sqrt(2))]
-
-    g_cost = {start: 0.0}                          # скільки пройдено від старту
+    def h(i, j):
+        return math.hypot(i - goal_cell[0], j - goal_cell[1])
+    g_cost = {start_cell: 0.0}
     came_from = {}
-    open_heap = [(h(*start), start)]               # черга за (пройдено + до цілі)
-
+    open_heap = [(h(*start_cell), start_cell)]
     while open_heap:
         _, cur = heapq.heappop(open_heap)
-        if cur == goal:
-            # відновити шлях назад і перевести клітинки у світові точки
+        if cur == goal_cell:
             cells = [cur]
             while cur in came_from:
                 cur = came_from[cur]
                 cells.append(cur)
             cells.reverse()
-            world_path = [cell_to_world(i, j, b, cs) for (i, j) in cells]
-            _mission_reset(world_path)             # предмет = середина безпечного маршруту
-            return world_path
-
+            return [cell_to_world(i, j, b, cs) for (i, j) in cells]
         ci, cj = cur
-        for di, dj, step in neighbours:
+        for di, dj, step in _NEIGHBOURS:
             ni, nj = ci + di, cj + dj
             if not free(ni, nj):
                 continue
-            # БЕЗ зрізання кутів: забороняємо діагональ ЛИШЕ коли ОБИДВІ ортогональні
-            # клітинки зайняті — саме тоді шлях пройшов би ВПРИТУЛ МІЖ двома деревами.
-            # (Одна зайнята клітинка — діагональ ще має запас з іншого боку, а інфляція
-            #  перешкод його страхує; строгіша заборона робила сітку непрохідною на seed 10.)
             if di != 0 and dj != 0 and not free(ci + di, cj) and not free(ci, cj + dj):
-                continue
+                continue                            # без зрізання кутів між двома деревами
             new_g = g_cost[cur] + step
             if new_g < g_cost.get((ni, nj), math.inf):
                 g_cost[(ni, nj)] = new_g
                 came_from[(ni, nj)] = cur
                 heapq.heappush(open_heap, (new_g + h(ni, nj), (ni, nj)))
+    return None
 
-    _mission_reset(None)                           # шляху немає → без предмета
-    return None                                    # шляху немає → пряма лінія (fallback)
+
+def _free_cell_near(grid, nx, ny, wx, wy, b, cs):
+    """Найближча ВІЛЬНА клітинка до світової точки (wx, wy)."""
+    ti, tj = world_to_cell(wx, wy, b, cs)
+    best, bd = None, float("inf")
+    for j in range(ny):
+        for i in range(nx):
+            if not grid[j][i]:
+                d = (i - ti) ** 2 + (j - tj) ** 2
+                if d < bd:
+                    bd, best = d, (i, j)
+    return best
+
+
+def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
+    grid, cs, nx, ny = build_occupancy_grid(md, cfg, cell_size)
+    b = cfg.bounds
+    _block_wreck_box(grid, md, cfg, b, cs, nx, ny)   # див. коментар у _block_wreck_box
+
+    start = world_to_cell(md.start[0], md.start[1], b, cs)
+    goal = world_to_cell(md.checkpoints[0][0], md.checkpoints[0][1], b, cs)
+
+    # ДВІ ТОЧКИ МІСІЇ на лінії старт→ціль: зарядка (1/3) і аптечка (2/3) — РІЗНІ місця.
+    sx, sy = float(md.start[0]), float(md.start[1])
+    gx, gy = float(md.checkpoints[0][0]), float(md.checkpoints[0][1])
+    charge = _free_cell_near(grid, nx, ny, sx + 0.33 * (gx - sx), sy + 0.33 * (gy - sy), b, cs)
+    pickup = _free_cell_near(grid, nx, ny, sx + 0.66 * (gx - sx), sy + 0.66 * (gy - sy), b, cs)
+
+    # маршрут через обидві точки: старт → ЗАРЯДКА → АПТЕЧКА → ЦІЛЬ (усе безпечним A*)
+    if charge and pickup and len({start, charge, pickup, goal}) == 4:
+        legs = [_astar_grid(grid, nx, ny, b, cs, a, c)
+                for a, c in ((start, charge), (charge, pickup), (pickup, goal))]
+        if all(legs):
+            combined = legs[0] + legs[1][1:] + legs[2][1:]
+            _mission_reset(combined,
+                           cell_to_world(charge[0], charge[1], b, cs),
+                           cell_to_world(pickup[0], pickup[1], b, cs))
+            return combined
+
+    # запасний варіант: прямий маршрут без місії
+    direct = _astar_grid(grid, nx, ny, b, cs, start, goal)
+    _mission_reset(direct, None, None)
+    return direct
 
 
 # ═══════════════════════════ БАТАРЕЯ + ЗАРЯДНА СТАНЦІЯ ════════════════════════════
@@ -154,32 +175,38 @@ def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
 # цілі, він летить на зарядну станцію (найближча до центру вільна клітинка),
 # заряджається до 100% і продовжує до цілі. Стан живе в модулі — обидві функції
 # (рішення в compute_desired_direction, витрата в step_autopilot) його бачать.
-BATTERY_DRAIN = 2.2        # % заряду на метр шляху  → ~45 м на повний заряд
-BATTERY_CHARGE = 2.0       # % за тік поки забираємо предмет → заодно підзарядка
+BATTERY_DRAIN = 2.2        # % заряду на метр шляху
+BATTERY_CHARGE = 2.0       # % за тік на зарядній станції
 BATTERY_LEVELS = (100, 85, 65, 45, 35, 25, 15)     # рівні індикатора
-PICKUP_ARRIVE = 3.5        # радіус «дрон над предметом», м
-GRAB_CLEARANCE = 0.9       # висота над землею під час забору, м (опускаємось)
-GRAB_TICKS = 20            # скільки тіків тримати над предметом (~0.7 с)
+ARRIVE_R = 3.5             # радіус «дрон над точкою місії», м
+GRAB_CLEARANCE = 0.9       # висота над землею під час забору аптечки, м (опускаємось)
+GRAB_TICKS = 20            # скільки тіків тримати над аптечкою (~0.7 с)
 
-# МІСІЯ: mode ∈ {to_pickup, grabbing, to_goal}. Дрон летить до предмета (аптечки)
-# на маршруті, ОПУСКАЄТЬСЯ, ЗАБИРАЄ (+підзарядка), піднімається й ВЕЗЕ до цілі.
-_BAT = {"level": 100.0, "mode": "to_pickup", "pickup": None, "mark": 100,
-        "carrying": False, "dwell": 0}
+# МІСІЯ (5 фаз): to_charge → charging → to_pickup → grabbing → to_goal.
+# Старт → ЗАРЯДКА (окрема точка) → АПТЕЧКА (окрема точка, опускаємось+беремо,
+# вона ПРИЛИПАЄ) → ЦІЛЬ (везе людині).
+_BAT = {"level": 100.0, "mode": "to_goal", "charge": None, "pickup": None,
+        "mark": 100, "carrying": False, "dwell": 0}
 
 
-def _mission_reset(path) -> None:
-    """Новий прогін: повний заряд, предмет = середина маршруту, ще не несемо."""
+def _mission_reset(path, charge, pickup) -> None:
+    """Новий прогін: повний заряд, дві точки місії, ще не несемо."""
     _BAT.update(level=100.0, mark=100, carrying=False, dwell=0)
-    _BAT["pickup"] = tuple(path[len(path) // 2]) if path and len(path) >= 2 else None
-    _BAT["mode"] = "to_pickup" if _BAT["pickup"] else "to_goal"
+    _BAT["charge"] = tuple(charge) if charge else None
+    _BAT["pickup"] = tuple(pickup) if pickup else None
+    _BAT["mode"] = "to_charge" if _BAT["charge"] else ("to_pickup" if _BAT["pickup"] else "to_goal")
+
+
+def mission_charge(md, cfg, cell_size: float = 1.0):
+    """Точка зарядки (для зеленої платформи у scene.py)."""
+    find_path(md, cfg, cell_size)
+    return _BAT["charge"] or (float(md.start[0]), float(md.start[1]))
 
 
 def mission_pickup(md, cfg, cell_size: float = 1.0):
-    """Точка предмета = середина A*-маршруту (для маркера-аптечки у scene.py)."""
-    path = find_path(md, cfg, cell_size)
-    if path and len(path) >= 2:
-        return tuple(path[len(path) // 2])
-    return (float(md.start[0]), float(md.start[1]))
+    """Точка аптечки (для маркера у scene.py)."""
+    find_path(md, cfg, cell_size)
+    return _BAT["pickup"] or (float(md.checkpoints[0][0]), float(md.checkpoints[0][1]))
 
 
 # ═══════════════════ ШАР 2 — APF: реактивне уникнення перешкод ════════════════════
@@ -352,17 +379,28 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
     carrot_goal = own.lookahead_point(pos, p)
     goal_pt = own.track[-1] if own.track else carrot_goal
 
-    # МІСІЯ: летимо до предмета (аптечки) на маршруті, опускаємось і забираємо,
-    # тоді веземо до цілі. Дрон НЕ з'їжджає з безпечного A*-шляху.
+    # МІСІЯ (5 фаз): старт → ЗАРЯДКА → АПТЕЧКА → ЦІЛЬ. Дрон НЕ з'їжджає з безпечного
+    # A*-шляху (усі точки — на маршруті).
+    charge = _BAT["charge"]
     pickup = _BAT["pickup"]
+    d_charge = math.hypot(charge[0] - px, charge[1] - py) if charge else float("inf")
     d_pick = math.hypot(pickup[0] - px, pickup[1] - py) if pickup else float("inf")
-    if _BAT["mode"] == "grabbing":
-        carrot = pickup                                     # тримаємось над предметом
-    elif _BAT["mode"] == "to_pickup":
-        carrot = pickup if d_pick < p.look_straight else carrot_goal
-        if d_pick < PICKUP_ARRIVE:
+    mode = _BAT["mode"]
+    if mode == "to_charge":
+        carrot = carrot_goal                                # транзит ПО БЕЗПЕЧНОМУ шляху
+        if d_charge < ARRIVE_R:
+            _BAT["mode"] = "charging"                        # прибули на зарядку
+    elif mode == "charging":
+        carrot = charge                                     # тримаємось на станції
+        if _BAT["level"] >= 99.9:
+            _BAT["mode"] = "to_pickup" if pickup else "to_goal"   # зарядились → по аптечку
+    elif mode == "to_pickup":
+        carrot = carrot_goal                                # транзит ПО БЕЗПЕЧНОМУ шляху
+        if d_pick < ARRIVE_R:
             _BAT["mode"] = "grabbing"                        # прибули → опускаємось забирати
-    else:  # to_goal — несемо предмет до цілі
+    elif mode == "grabbing":
+        carrot = pickup                                     # тримаємось над аптечкою
+    else:  # to_goal — несемо аптечку до людини
         carrot = carrot_goal
 
     ax, ay = carrot[0] - px, carrot[1] - py
@@ -401,9 +439,9 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
         fx += p.k_attract * p.stuck_boost_factor * perp_x
         fy += p.k_attract * p.stuck_boost_factor * perp_y
 
-    # 4. ЗУПИНКА НАД ПРЕДМЕТОМ: у режимі забору й дуже близько — глушимо мотори (завис),
-    # щоб дрон спокійно опускався й забирав, а не кружляв на повній швидкості.
-    if _BAT["mode"] == "grabbing" and d_pick < 1.0:
+    # 4. ЗУПИНКА НА ТОЧЦІ МІСІЇ: на зарядці або над аптечкою й дуже близько —
+    # глушимо мотори (завис), щоб дрон спокійно стояв, а не кружляв.
+    if (_BAT["mode"] == "grabbing" and d_pick < 1.0) or (_BAT["mode"] == "charging" and d_charge < 1.0):
         return (0.0, 0.0), boosted, carrot
 
     # нормалізувати суму в ОДИНИЧНИЙ вектор
@@ -533,15 +571,17 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
         pitch = -0.15 * (speed / p.max_speed)           # ніс униз у русі — «летить уперед»
         roll = -0.20 * (applied / (max_dyaw + 1e-9))    # крен у бік повороту
 
-    # МІСІЯ/БАТАРЕЯ: над предметом — опускаємось, ЗАБИРАЄМО (+підзарядка); інакше — витрата
-    if _BAT["mode"] == "grabbing":
+    # МІСІЯ/БАТАРЕЯ: на зарядці — заряджаємось; над аптечкою — опускаємось і ЗАБИРАЄМО;
+    # інакше — витрачаємо заряд на пройдений шлях.
+    if _BAT["mode"] == "charging":
         _BAT["level"] = min(100.0, _BAT["level"] + BATTERY_CHARGE)
+    elif _BAT["mode"] == "grabbing":
         low_enough = (z - terrain.height_at(x, y)) <= GRAB_CLEARANCE + 0.25
         if low_enough:
             _BAT["dwell"] += 1
-            if _BAT["dwell"] >= GRAB_TICKS and _BAT["level"] >= 99.9:
-                _BAT["carrying"] = True                  # ЗАБРАЛИ предмет
-                _BAT["mode"] = "to_goal"                 # → веземо до цілі
+            if _BAT["dwell"] >= GRAB_TICKS:
+                _BAT["carrying"] = True                  # ЗАБРАЛИ аптечку (вона прилипає)
+                _BAT["mode"] = "to_goal"                 # → веземо до людини
     else:
         moved = math.hypot(vx, vy) * dt
         _BAT["level"] = max(0.0, _BAT["level"] - BATTERY_DRAIN * moved)

@@ -848,6 +848,13 @@ class DRONE_OT_autonomous(bpy.types.Operator):
         propellers.spin("drone", 0.8, 1.0 / (_RUNTIME.get("traj_hz") or KEY_HZ))
         _update_chase_camera_pose((frame["x"], frame["y"], frame["z"]), frame["yaw"])
 
+        # Аптечка ПРИЛИПАЄ до дрона, коли забрана (carrying) — висить трохи нижче корпусу
+        if frame.get("carrying"):
+            for _nm, _dz in (("Medkit", -0.35), ("MedkitCrossH", -0.23)):
+                _obj = bpy.data.objects.get(_nm)
+                if _obj is not None:
+                    _obj.location = (frame["x"], frame["y"], frame["z"] + _dz)
+
         new_status = frame["status"]
         if new_status == STATUS_COLLISION and _RUNTIME["status"] != STATUS_COLLISION:
             _RUNTIME["crash_text"] = (CRASH_EASTER_EGG_TEXT
