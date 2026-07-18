@@ -43,6 +43,16 @@ from solution import (find_path, StuckDetector, APFParams, compute_desired_direc
 
 SIM_HZ = 30.0
 MAX_SIM_SECONDS = 90.0
+
+# ── Фізика збурень (вітер/пориви дощу) ───────────────────────────────────────
+# Щотіка з імовірністю WIND_PROB дрон отримує боковий поштовх WIND_GUST_M метрів
+# у випадковий бік — ПЕРЕД перевіркою колізій, тож вітер реально впливає на
+# траєкторію й статус. Сіється від seed прогону → відтворювано (той самий сід =
+# той самий вітер). Рівень нижче — «помірний шторм», який розв'язок витримує
+# (виміряно: 10/10 аж до 50%×0.12м); підніми, щоб зробити політ важчим.
+WIND_ENABLED = True
+WIND_PROB = 0.40        # частка тіків із поривом
+WIND_GUST_M = 0.10      # сила пориву, м/тік
 OUT_DIR = Path(__file__).resolve().parent / "out"
 HISTORY_PATH = OUT_DIR / "autonomous_runs.json"
 
@@ -104,6 +114,9 @@ def simulate(seed: int, n_trees: int = None, sim_seconds: float = MAX_SIM_SECOND
     apf_p = APFParams()
     boost_state = {}
 
+    import random
+    wind_rng = random.Random(seed)          # відтворюваний вітер на кожен сід
+
     goal = md.checkpoints[0]
     goal_radius = cfg.cp_cyl_radius
     dt = 1.0 / sim_hz
@@ -118,6 +131,12 @@ def simulate(seed: int, n_trees: int = None, sim_seconds: float = MAX_SIM_SECOND
         direction, boosted, _carrot = compute_desired_direction(
             (state.x, state.y), lidar, ba, tracker, stuck, t, apf_p, boost_state)
         state = step_autopilot(state, direction, terrain, dt, ap_p, min_lidar=float(lidar.min()))
+
+        # ВІТЕР: боковий порив ПЕРЕД перевіркою колізій — реально впливає на політ
+        if WIND_ENABLED and wind_rng.random() < WIND_PROB:
+            ang = wind_rng.uniform(0.0, 2.0 * math.pi)
+            state.x += WIND_GUST_M * math.cos(ang)
+            state.y += WIND_GUST_M * math.sin(ang)
 
         status = collision_and_bounds_status((state.x, state.y, state.z), md, terrain, cfg)
         if status == STATUS_RUNNING and math.hypot(state.x - goal[0], state.y - goal[1]) < goal_radius:
