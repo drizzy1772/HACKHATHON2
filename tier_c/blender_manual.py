@@ -1242,9 +1242,14 @@ class DRONE_OT_switch_role(bpy.types.Operator):
 
 def _setup_compositor_for_vision(mode):
     scene = bpy.context.scene
-    scene.use_nodes = True
-    tree = scene.node_tree
-    
+    try:
+        scene.use_nodes = True
+        tree = scene.node_tree
+    except Exception:                                 # noqa: BLE001 — компоузер недоступний у Blender 5.x
+        return
+    if tree is None:                                  # немає node_tree — пропускаємо (підсилення робить _night_enhance)
+        return
+
     # Очищуємо старі ноди
     for node in tree.nodes:
         tree.nodes.remove(node)
@@ -1325,8 +1330,48 @@ def _setup_compositor_for_vision(mode):
         tree.links.new(color_ramp.outputs["Image"], comp.inputs["Image"])
 
 
+def _night_enhance(mode):
+    """Нічне ПІДСИЛЕННЯ ЗОБРАЖЕННЯ: буст експозиції + світіння об'єктів
+    (люди/предмети — виділені, дерева/гілки — зелені контури). У день гасне."""
+    try:
+        night = (mode == "NIGHT")
+        # 1) підсилення яскравості («усиление изображения»)
+        try:
+            context = bpy.context
+            context.scene.view_settings.exposure = 1.6 if night else 0.0
+        except Exception:                             # noqa: BLE001
+            pass
+        # 2) виділення контурів світінням (name -> (R,G,B, сила))
+        glow = {
+            "PersonBody":   (0.20, 1.00, 0.45, 7.0),  # людина — яскраво-зелена
+            "PersonSkin":   (0.35, 1.00, 0.55, 5.0),
+            "MedkitMat":    (1.00, 0.30, 0.30, 7.0),  # аптечка — червона
+            "MedkitCross":  (1.00, 1.00, 1.00, 6.0),
+            "FuelTankMat":  (1.00, 0.60, 0.12, 7.0),  # бензобак — помаранчевий
+            "ChargePadMat": (0.20, 1.00, 0.45, 6.0),  # платформи — зелені
+            "TowerBeaconMat": (1.00, 0.10, 0.10, 8.0),
+            "TrunkMat":     (0.10, 0.70, 0.25, 1.6),  # дерева/гілки — слабкі зелені контури
+            "DecoBushMat":  (0.12, 0.65, 0.20, 1.4),
+        }
+        for name, (r, g, b, s) in glow.items():
+            m = bpy.data.materials.get(name)
+            if not m or not m.use_nodes:
+                continue
+            bsdf = m.node_tree.nodes.get("Principled BSDF")
+            if not bsdf:
+                continue
+            col = bsdf.inputs.get("Emission Color") or bsdf.inputs.get("Emission")
+            if col is not None:
+                col.default_value = (r, g, b, 1.0)
+            if "Emission Strength" in bsdf.inputs:
+                bsdf.inputs["Emission Strength"].default_value = s if night else 0.0
+    except Exception as exc:                          # noqa: BLE001 — не має ламати перемикання
+        print("Нічне підсилення:", exc)
+
+
 def update_vision_mode(self, context):
     mode = self.vision_mode
+    _night_enhance(mode)                              # підсилення зображення вночі
     world = bpy.data.worlds.get("World")
     if world and world.use_nodes:
         tree = world.node_tree
@@ -1403,8 +1448,11 @@ def update_vision_mode(self, context):
             
             mat = bpy.data.materials.new(name="MoonMat")
             mat.use_nodes = True
-            mat.node_tree.nodes["Principled BSDF"].inputs["Emission"].default_value = (1.0, 1.0, 0.8, 1.0)
-            mat.node_tree.nodes["Principled BSDF"].inputs["Emission Strength"].default_value = 5.0
+            _bsdf = mat.node_tree.nodes["Principled BSDF"]
+            _emi = _bsdf.inputs.get("Emission Color") or _bsdf.inputs.get("Emission")
+            if _emi is not None:                      # Blender 4+/5: "Emission Color"
+                _emi.default_value = (1.0, 1.0, 0.8, 1.0)
+            _bsdf.inputs["Emission Strength"].default_value = 5.0
             moon.data.materials.append(mat)
             
             # Додаємо легке заливне світло від місяця
