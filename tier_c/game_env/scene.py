@@ -299,15 +299,25 @@ def _build_mission_markers(md, cfg, terrain):
         bar.scale = (1.0, 0.28, 0.18)
         bar.data.materials.append(white)
 
-        # «людина» на цілі-фурі (синій стовпчик)
+        # «людина» біля цілі-фури — проста фігура: тіло + голова + руки (їй везуть аптечку)
         gx, gy = float(md.checkpoints[0][0]), float(md.checkpoints[0][1])
         gz = terrain.height_at(gx, gy)
-        blue = scene.make_material("PersonMat", (0.20, 0.45, 0.95, 1.0))
-        bpy.ops.mesh.primitive_cylinder_add(radius=0.28, depth=1.7,
-                                            location=(gx + 1.5, gy, gz + 0.85))
-        person = bpy.context.active_object
-        person.name = "Person"
-        person.data.materials.append(blue)
+        px, py = gx + 1.8, gy
+        clothes = scene.make_material("PersonBody", (0.20, 0.45, 0.95, 1.0))  # синій одяг
+        skin = scene.make_material("PersonSkin", (0.92, 0.76, 0.62, 1.0))     # шкіра
+        # тіло
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.24, depth=1.0, location=(px, py, gz + 0.55))
+        body = bpy.context.active_object; body.name = "Person"; body.data.materials.append(clothes)
+        # голова
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=0.22, location=(px, py, gz + 1.25))
+        head = bpy.context.active_object; head.name = "PersonHead"; head.data.materials.append(skin)
+        # руки (тонкі циліндри по боках)
+        for side in (-1, 1):
+            bpy.ops.mesh.primitive_cylinder_add(radius=0.06, depth=0.7,
+                                                location=(px, py + side * 0.3, gz + 0.6))
+            arm = bpy.context.active_object; arm.name = f"PersonArm{side}"
+            arm.rotation_euler = (0.25 * side, 0.0, 0.0)
+            arm.data.materials.append(skin)
     except Exception as exc:                        # noqa: BLE001 — маркери не мають ламати сцену
         print("Маркери місії: не створено —", exc)
 

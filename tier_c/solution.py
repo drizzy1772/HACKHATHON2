@@ -147,26 +147,16 @@ def find_path(md, cfg, cell_size: float = 1.0) -> Optional[List[Vec2]]:
     start = world_to_cell(md.start[0], md.start[1], b, cs)
     goal = world_to_cell(md.checkpoints[0][0], md.checkpoints[0][1], b, cs)
 
-    # ДВІ ТОЧКИ МІСІЇ на лінії старт→ціль: зарядка (1/3) і аптечка (2/3) — РІЗНІ місця.
-    sx, sy = float(md.start[0]), float(md.start[1])
-    gx, gy = float(md.checkpoints[0][0]), float(md.checkpoints[0][1])
-    charge = _free_cell_near(grid, nx, ny, sx + 0.33 * (gx - sx), sy + 0.33 * (gy - sy), b, cs)
-    pickup = _free_cell_near(grid, nx, ny, sx + 0.66 * (gx - sx), sy + 0.66 * (gy - sy), b, cs)
-
-    # маршрут через обидві точки: старт → ЗАРЯДКА → АПТЕЧКА → ЦІЛЬ (усе безпечним A*)
-    if charge and pickup and len({start, charge, pickup, goal}) == 4:
-        legs = [_astar_grid(grid, nx, ny, b, cs, a, c)
-                for a, c in ((start, charge), (charge, pickup), (pickup, goal))]
-        if all(legs):
-            combined = legs[0] + legs[1][1:] + legs[2][1:]
-            _mission_reset(combined,
-                           cell_to_world(charge[0], charge[1], b, cs),
-                           cell_to_world(pickup[0], pickup[1], b, cs))
-            return combined
-
-    # запасний варіант: прямий маршрут без місії
+    # Прямий БЕЗПЕЧНИЙ маршрут (він і дає 33/33). Дві точки місії — на самому шляху:
+    # зарядка на 1/3, аптечка на 2/3. Дрон не з'їжджає, а зупиняється на них дорогою.
     direct = _astar_grid(grid, nx, ny, b, cs, start, goal)
-    _mission_reset(direct, None, None)
+    if direct is None:
+        _mission_reset(None, None, None)
+        return None
+    n = len(direct)
+    charge = tuple(direct[n // 3]) if n >= 6 else None
+    pickup = tuple(direct[2 * n // 3]) if n >= 6 else None
+    _mission_reset(direct, charge, pickup)
     return direct
 
 
@@ -181,17 +171,19 @@ BATTERY_LEVELS = (100, 85, 65, 45, 35, 25, 15)     # рівні індикато
 ARRIVE_R = 3.5             # радіус «дрон над точкою місії», м
 GRAB_CLEARANCE = 0.9       # висота над землею під час забору аптечки, м (опускаємось)
 GRAB_TICKS = 20            # скільки тіків тримати над аптечкою (~0.7 с)
+CHARGE_CLEARANCE = 0.5     # ПРИЗЕМЛЯЄМОСЬ на станції (низько над землею), м
+CHARGE_DWELL_TICKS = 90    # тримаємось на станції ~3 с (90 тіків @ 30 Гц)
 
 # МІСІЯ (5 фаз): to_charge → charging → to_pickup → grabbing → to_goal.
 # Старт → ЗАРЯДКА (окрема точка) → АПТЕЧКА (окрема точка, опускаємось+беремо,
 # вона ПРИЛИПАЄ) → ЦІЛЬ (везе людині).
 _BAT = {"level": 100.0, "mode": "to_goal", "charge": None, "pickup": None,
-        "mark": 100, "carrying": False, "dwell": 0}
+        "mark": 100, "carrying": False, "dwell": 0, "cdwell": 0}
 
 
 def _mission_reset(path, charge, pickup) -> None:
     """Новий прогін: повний заряд, дві точки місії, ще не несемо."""
-    _BAT.update(level=100.0, mark=100, carrying=False, dwell=0)
+    _BAT.update(level=100.0, mark=100, carrying=False, dwell=0, cdwell=0)
     _BAT["charge"] = tuple(charge) if charge else None
     _BAT["pickup"] = tuple(pickup) if pickup else None
     _BAT["mode"] = "to_charge" if _BAT["charge"] else ("to_pickup" if _BAT["pickup"] else "to_goal")
@@ -391,9 +383,8 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
         if d_charge < ARRIVE_R:
             _BAT["mode"] = "charging"                        # прибули на зарядку
     elif mode == "charging":
-        carrot = charge                                     # тримаємось на станції
-        if _BAT["level"] >= 99.9:
-            _BAT["mode"] = "to_pickup" if pickup else "to_goal"   # зарядились → по аптечку
+        carrot = charge                                     # сідаємо й тримаємось на станції
+        # перехід (зарядились + витримали 3 с) робить step_autopilot
     elif mode == "to_pickup":
         carrot = carrot_goal                                # транзит ПО БЕЗПЕЧНОМУ шляху
         if d_pick < ARRIVE_R:
@@ -552,8 +543,14 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
     x = state.x + vx * dt
     y = state.y + vy * dt
 
-    # 2. ВИСОТА — тримаємо alt_clearance над рельєфом; НАД ПРЕДМЕТОМ опускаємось забрати
-    clear = GRAB_CLEARANCE if _BAT["mode"] == "grabbing" else p.alt_clearance
+    # 2. ВИСОТА — тримаємо alt_clearance; над аптечкою опускаємось забрати;
+    #    на зарядці СІДАЄМО (низько над землею).
+    if _BAT["mode"] == "grabbing":
+        clear = GRAB_CLEARANCE
+    elif _BAT["mode"] == "charging":
+        clear = CHARGE_CLEARANCE
+    else:
+        clear = p.alt_clearance
     target_z = terrain.height_at(x, y) + clear
     dz_max = p.max_climb_rate * dt
     dz = max(-dz_max, min(dz_max, target_z - state.z))  # обмежений набір/спуск висоти
@@ -575,6 +572,11 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
     # інакше — витрачаємо заряд на пройдений шлях.
     if _BAT["mode"] == "charging":
         _BAT["level"] = min(100.0, _BAT["level"] + BATTERY_CHARGE)
+        landed = (z - terrain.height_at(x, y)) <= CHARGE_CLEARANCE + 0.25
+        if landed:                                   # сіли — рахуємо 3 с витримки
+            _BAT["cdwell"] += 1
+            if _BAT["cdwell"] >= CHARGE_DWELL_TICKS and _BAT["level"] >= 99.9:
+                _BAT["mode"] = "to_pickup" if _BAT["pickup"] else "to_goal"
     elif _BAT["mode"] == "grabbing":
         low_enough = (z - terrain.height_at(x, y)) <= GRAB_CLEARANCE + 0.25
         if low_enough:

@@ -848,12 +848,22 @@ class DRONE_OT_autonomous(bpy.types.Operator):
         propellers.spin("drone", 0.8, 1.0 / (_RUNTIME.get("traj_hz") or KEY_HZ))
         _update_chase_camera_pose((frame["x"], frame["y"], frame["z"]), frame["yaw"])
 
-        # Аптечка ПРИЛИПАЄ до дрона, коли забрана (carrying) — висить трохи нижче корпусу
+        # Аптечка: несемо (carrying) → висить під дроном; НЕ несемо → на своєму місці
+        # (це й фіксить перезапуск: кадри стартують з carrying=False → аптечка вдома).
+        _med = bpy.data.objects.get("Medkit")
+        _cross = bpy.data.objects.get("MedkitCrossH")
         if frame.get("carrying"):
-            for _nm, _dz in (("Medkit", -0.35), ("MedkitCrossH", -0.23)):
-                _obj = bpy.data.objects.get(_nm)
-                if _obj is not None:
-                    _obj.location = (frame["x"], frame["y"], frame["z"] + _dz)
+            if _med is not None:
+                _med.location = (frame["x"], frame["y"], frame["z"] - 0.35)
+            if _cross is not None:
+                _cross.location = (frame["x"], frame["y"], frame["z"] - 0.23)
+        else:
+            _home = _RUNTIME.get("medkit_home")
+            _chome = _RUNTIME.get("medkit_cross_home")
+            if _med is not None and _home is not None:
+                _med.location = _home
+            if _cross is not None and _chome is not None:
+                _cross.location = _chome
 
         new_status = frame["status"]
         if new_status == STATUS_COLLISION and _RUNTIME["status"] != STATUS_COLLISION:
@@ -950,6 +960,12 @@ def _load_autonomous_map(seed):
     md = MapData.from_dict(result["map"])
     cfg = dataclasses.replace(CFG, n_trees=result["meta"]["n_trees"])
     build_scene_from_mapdata(md, cfg)
+    # запам'ятати «домівку» аптечки (де scene.py її заспавнив), щоб при перезапуску
+    # вона поверталась на місце, а не лишалась висіти під дроном
+    _med = bpy.data.objects.get("Medkit")
+    _cross = bpy.data.objects.get("MedkitCrossH")
+    _RUNTIME["medkit_home"] = tuple(_med.location) if _med else None
+    _RUNTIME["medkit_cross_home"] = tuple(_cross.location) if _cross else None
     _RUNTIME["trajectory"] = result["frames"]
     _RUNTIME["traj_hz"] = result["meta"]["sim_hz"]
     _RUNTIME["traj_seed"] = seed   # яку мапу вже порахували — щоб «Запустити
