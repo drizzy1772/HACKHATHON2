@@ -194,9 +194,15 @@ def _mission_reset(path, charge, pickup) -> None:
 
 
 def mission_charge(md, cfg, cell_size: float = 1.0):
-    """Точка зарядки (для зеленої платформи у scene.py)."""
+    """Точка зарядки НА ШЛЯХУ ТУДИ (для зеленої платформи у scene.py)."""
     find_path(md, cfg, cell_size)
     return _BAT["charge"] or (float(md.start[0]), float(md.start[1]))
+
+
+def mission_charge2(md, cfg, cell_size: float = 1.0):
+    """Точка зарядки НА ЗВОРОТНОМУ ШЛЯХУ (друга зелена платформа)."""
+    find_path(md, cfg, cell_size)
+    return _BAT["charge2"]           # None, якщо місії нема
 
 
 def mission_pickup(md, cfg, cell_size: float = 1.0):

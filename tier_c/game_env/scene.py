@@ -276,14 +276,22 @@ def _build_mission_markers(md, cfg, terrain):
     """Маркери місії: аптечка (червоний куб з хрестом) на предметі + людина на цілі."""
     try:
         import solution                            # верхнього рівня (tier_c на sys.path)
-        # зелена платформа зарядки (окрема точка)
+        green = scene.make_material("ChargePadMat", (0.15, 0.95, 0.35, 1.0))
+        # зелена платформа зарядки НА ШЛЯХУ ТУДИ
         cx, cy = solution.mission_charge(md, cfg)
         cz = terrain.height_at(cx, cy)
-        green = scene.make_material("ChargePadMat", (0.15, 0.95, 0.35, 1.0))
         bpy.ops.mesh.primitive_cylinder_add(radius=1.2, depth=0.15, location=(cx, cy, cz + 0.08))
         pad = bpy.context.active_object
         pad.name = "ChargePad"
         pad.data.materials.append(green)
+        # друга зелена платформа — зарядка НА ЗВОРОТНОМУ шляху (щоб дрон сідав на неї, не в траву)
+        c2 = solution.mission_charge2(md, cfg)
+        if c2 is not None:
+            c2z = terrain.height_at(c2[0], c2[1])
+            bpy.ops.mesh.primitive_cylinder_add(radius=1.2, depth=0.15, location=(c2[0], c2[1], c2z + 0.08))
+            pad2 = bpy.context.active_object
+            pad2.name = "ChargePad2"
+            pad2.data.materials.append(green)
         # аптечка на точці предмета
         sx, sy = solution.mission_pickup(md, cfg)
         sz = terrain.height_at(sx, sy)
@@ -356,6 +364,36 @@ def _build_tower(md, cfg, terrain):
         print("Вишка: не створено —", exc)
 
 
+def _build_decorations(md, cfg, terrain):
+    """Декорації лісу: камені / кущі / ящики біля частини дерев (неколізійні, візуал)."""
+    try:
+        rock = scene.make_material("DecoRockMat", (0.42, 0.42, 0.46, 1.0))
+        bush = scene.make_material("DecoBushMat", (0.16, 0.42, 0.15, 1.0))
+        crate = scene.make_material("DecoCrateMat", (0.55, 0.38, 0.18, 1.0))
+        for i, t in enumerate(md.trees):
+            if i % 4 != 0:                            # не біля кожного дерева
+                continue
+            tx, ty = float(t[0]), float(t[1])
+            ox = tx + 0.9 * ((i % 3) - 1)             # зсув поруч (детерміновано)
+            oy = ty + 0.9 * (((i // 3) % 3) - 1)
+            gz = terrain.height_at(ox, oy)
+            kind = i % 3
+            if kind == 0:                             # камінь
+                bpy.ops.mesh.primitive_uv_sphere_add(radius=0.4, location=(ox, oy, gz + 0.12))
+                o = bpy.context.active_object; o.name = "DecoRock"; o.scale = (1.0, 1.0, 0.5)
+                o.data.materials.append(rock)
+            elif kind == 1:                           # кущ
+                bpy.ops.mesh.primitive_uv_sphere_add(radius=0.5, location=(ox, oy, gz + 0.35))
+                o = bpy.context.active_object; o.name = "DecoBush"; o.scale = (1.0, 1.0, 0.8)
+                o.data.materials.append(bush)
+            else:                                     # ящик
+                bpy.ops.mesh.primitive_cube_add(size=0.55, location=(ox, oy, gz + 0.28))
+                o = bpy.context.active_object; o.name = "DecoCrate"
+                o.data.materials.append(crate)
+    except Exception as exc:                          # noqa: BLE001 — декор не має ламати сцену
+        print("Декорації: не створено —", exc)
+
+
 def build_environment(md, cfg, terrain):
     """Повне середовище 2e2bc5d: рельєф-меш + ліс + фури-чекпоінти + тематичні перешкоди.
     (Світло/небо й дрон/камери — окремо через animate_drone у launcher'і.)"""
@@ -364,5 +402,6 @@ def build_environment(md, cfg, terrain):
     _build_trucks(md, cfg, terrain)
     _build_obstacles(md, cfg, terrain)
     _build_tower(md, cfg, terrain)                 # вишка на спавні
+    _build_decorations(md, cfg, terrain)           # камені/кущі/ящики в лісі
     _build_mission_markers(md, cfg, terrain)       # аптечка на предметі + людина на цілі
     _build_rain(cfg)                               # ← дощ останнім: збій не зачепить решту
