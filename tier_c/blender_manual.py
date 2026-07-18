@@ -767,6 +767,7 @@ class DRONE_OT_autonomous(bpy.types.Operator):
 
     def execute(self, context):
         _RUNTIME["traj_frame"] = 0
+        _RUNTIME["photo_done"] = False               # новий прогін → знімок можна зробити знову
         _RUNTIME["status"] = STATUS_RUNNING
         _RUNTIME["crash_text"] = None
         _RUNTIME["running"] = True
@@ -890,6 +891,10 @@ class DRONE_OT_autonomous(bpy.types.Operator):
             "stall_speed": None,
             "lidar": frame["lidar"],
         }
+        # ФОТО: у момент знімка (frame["photo"]) — рендеримо кадр 3D-світу з метаданими
+        if frame.get("photo") and not _RUNTIME.get("photo_done"):
+            _RUNTIME["photo_done"] = True
+            _take_photo(frame)
         _RUNTIME["traj_frame"] = i + 1
 
     def _finish(self, context):
@@ -2192,6 +2197,90 @@ def _draw_object_detection():
         gpu.state.line_width_set(1.0)
     except Exception:                                # noqa: BLE001 — оверлей не має ламати гру
         pass
+
+
+def _take_photo(frame):
+    """Знімок 3D-світу з поточної камери + метадані (дата, координати, місія) у файл."""
+    try:
+        import datetime
+        scene = bpy.context.scene
+        md = _RUNTIME.get("md")
+        now = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        gx = gy = 0.0
+        if md is not None:
+            gx, gy = float(md.checkpoints[0][0]), float(md.checkpoints[0][1])
+        note = ("AI-DRONE  %s   коорд(%.1f, %.1f, %.1f)  ->  ціль(%.1f, %.1f)   Місія: доставити аптечку постраждалому"
+                % (now, frame["x"], frame["y"], frame["z"], gx, gy))
+        r = scene.render
+        r.use_stamp = True
+        r.use_stamp_note = True
+        r.stamp_note_text = note
+        for a in ("use_stamp_date", "use_stamp_time", "use_stamp_frame",
+                  "use_stamp_render_time", "use_stamp_scene", "use_stamp_filename"):
+            if hasattr(r, a):
+                setattr(r, a, False)
+        try:
+            r.stamp_font_size = 16
+        except Exception:                             # noqa: BLE001
+            pass
+        r.resolution_x, r.resolution_y, r.resolution_percentage = 960, 600, 100
+        seed = _RUNTIME.get("traj_seed", 0)
+        out = sim_headless.OUT_DIR / "photos"
+        out.mkdir(parents=True, exist_ok=True)
+        path = out / ("photo_seed%s.png" % seed)
+        r.filepath = str(path)
+        # СХОВАТИ жовтий циліндр-«маяк» цілі на час знімка — інакше камера дивиться
+        # крізь напівпрозорий жовтий об'єм і весь кадр жовтий.
+        _zones = [o for o in bpy.data.objects if o.name.startswith("CP_") and o.name.endswith("_zone")]
+        _prev = [(o, o.hide_render) for o in _zones]
+        for o in _zones:
+            o.hide_render = True
+        try:
+            bpy.ops.render.render(write_still=True)
+        finally:
+            for o, hr in _prev:
+                o.hide_render = hr
+        _RUNTIME["last_photo"] = str(path)
+        print("ФОТО збережено:", path)
+        _email_photo(str(path), note)                 # надіслати на пошту (якщо задані креденшли)
+    except Exception as exc:                          # noqa: BLE001 — фото не має ламати гру
+        print("Фото: помилка —", exc)
+
+
+def _email_photo(path, note):
+    """Надіслати знімок на e-mail. БЕЗ хардкоду паролів: креденшли — лише з
+    змінних середовища. Якщо їх нема — тихо пропускаємо (демо не залежить від пошти).
+
+        export SKYRUN_SMTP_USER='you@gmail.com'
+        export SKYRUN_SMTP_PASS='xxxx xxxx xxxx xxxx'   # Gmail App Password (не звичайний!)
+        export SKYRUN_MAIL_TO='recipient@example.com'   # необов'язково; типово = SMTP_USER
+    """
+    import os
+    user = os.environ.get("SKYRUN_SMTP_USER")
+    pwd = os.environ.get("SKYRUN_SMTP_PASS")
+    if not user or not pwd:
+        print("Пошта: пропущено (задай SKYRUN_SMTP_USER / SKYRUN_SMTP_PASS, щоб надсилати).")
+        return
+    to = os.environ.get("SKYRUN_MAIL_TO", user)
+    host = os.environ.get("SKYRUN_SMTP_HOST", "smtp.gmail.com")
+    port = int(os.environ.get("SKYRUN_SMTP_PORT", "465"))
+    try:
+        import smtplib
+        from email.message import EmailMessage
+        msg = EmailMessage()
+        msg["Subject"] = "AI-SkyRun: знімок з дрона"
+        msg["From"] = user
+        msg["To"] = to
+        msg.set_content(note)
+        with open(path, "rb") as fh:
+            msg.add_attachment(fh.read(), maintype="image", subtype="png",
+                               filename=os.path.basename(path))
+        with smtplib.SMTP_SSL(host, port, timeout=20) as s:
+            s.login(user, pwd)
+            s.send_message(msg)
+        print("Пошта: знімок надіслано ->", to)
+    except Exception as exc:                          # noqa: BLE001 — пошта не має ламати гру
+        print("Пошта: помилка —", exc)
 
 
 def _draw_overlay():

@@ -133,8 +133,11 @@ def simulate(seed: int, n_trees: int = None, sim_seconds: float = MAX_SIM_SECOND
             (state.x, state.y), lidar, ba, tracker, stuck, t, apf_p, boost_state)
         state = step_autopilot(state, direction, terrain, dt, ap_p, min_lidar=float(lidar.min()))
 
-        # ВІТЕР: боковий порив ПЕРЕД перевіркою колізій — реально впливає на політ
-        if WIND_ENABLED and wind_rng.random() < WIND_PROB:
+        # ВІТЕР: боковий порив ПЕРЕД перевіркою колізій — реально впливає на політ.
+        # Під час фотопаузи дрон завмер (мотори 0) — вітру НЕ рахуємо й НЕ їмо RNG,
+        # щоб довжина паузи не зсувала послідовність поривів на зворотному шляху.
+        _frozen = _solution._BAT.get("mode") == "photographing"
+        if WIND_ENABLED and not _frozen and wind_rng.random() < WIND_PROB:
             ang = wind_rng.uniform(0.0, 2.0 * math.pi)
             state.x += WIND_GUST_M * math.cos(ang)
             state.y += WIND_GUST_M * math.sin(ang)
@@ -157,6 +160,8 @@ def simulate(seed: int, n_trees: int = None, sim_seconds: float = MAX_SIM_SECOND
             "carrying": bool(_solution._BAT.get("carrying", False)),   # для «прилипання» аптечки
             "delivered": bool(_solution._BAT.get("mode") in ("to_home", "charging_home", "to_home2")
                                or _solution._BAT.get("done")),
+            "photo": bool(_solution._BAT.get("photo", False)),      # один кадр — момент знімка
+            "phase": str(_solution._BAT.get("mode", "")),
         })
         if status != STATUS_RUNNING:
             break

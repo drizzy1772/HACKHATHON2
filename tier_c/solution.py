@@ -177,15 +177,21 @@ CHARGE_DWELL_TICKS = 90    # тримаємось на станції ~3 с (90 
 # МІСІЯ (5 фаз): to_charge → charging → to_pickup → grabbing → to_goal.
 # Старт → ЗАРЯДКА (окрема точка) → АПТЕЧКА (окрема точка, опускаємось+беремо,
 # вона ПРИЛИПАЄ) → ЦІЛЬ (везе людині).
+PHOTO_DWELL_TICKS = 75     # стабілізація перед знімком ~2.5 с (75 тіків @ 30 Гц)
+PHOTO_APPROACH = 3.6       # на цій відстані завмираємо фотографувати (≈ стара точка розвороту)
+PHOTO_STANDOFF = 3.4       # (лишено для сумісності; зупинку тепер тримає сама фаза)
+
 _BAT = {"level": 100.0, "mode": "to_goal", "charge": None, "pickup": None,
         "charge2": None, "home": None, "done": False,
-        "mark": 100, "carrying": False, "dwell": 0, "cdwell": 0}
+        "mark": 100, "carrying": False, "dwell": 0, "cdwell": 0,
+        "photo": False, "pdwell": 0}
 
 
 def _mission_reset(path, charge, pickup) -> None:
     """Новий прогін: повний заряд, точки місії, ще не несемо. home = старт;
     charge2 = зарядка НА ЗВОРОТНОМУ шляху (середина маршруту)."""
-    _BAT.update(level=100.0, mark=100, carrying=False, dwell=0, cdwell=0, done=False)
+    _BAT.update(level=100.0, mark=100, carrying=False, dwell=0, cdwell=0, done=False,
+                photo=False, pdwell=0)
     _BAT["charge"] = tuple(charge) if charge else None
     _BAT["pickup"] = tuple(pickup) if pickup else None
     _BAT["home"] = tuple(path[0]) if (pickup and path and len(path) >= 2) else None
@@ -286,6 +292,17 @@ class CurvatureTracker:
             return a, 0.0
         tt = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / L2))
         return (ax + tt * dx, ay + tt * dy), tt
+
+    def reset_to_nearest(self, pos: Vec2):
+        """Поставити курсор на ГЛОБАЛЬНО найближчий сегмент (для старту з довільної
+        точки, напр. після зупинки на фото — інакше монотонний _advance бере не той)."""
+        best_d, best = float("inf"), 0
+        for i in range(len(self.track) - 1):
+            proj, _ = self._closest_on_segment(pos, self.track[i], self.track[i + 1])
+            d = math.hypot(pos[0] - proj[0], pos[1] - proj[1])
+            if d < best_d:
+                best_d, best = d, i
+        self.seg = best
 
     def _advance(self, pos: Vec2, search_ahead: int = 4):
         best_d, best_seg, best_t = math.inf, self.seg, 0.0
@@ -390,6 +407,7 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
     d_charge = math.hypot(charge[0] - px, charge[1] - py) if charge else float("inf")
     d_pick = math.hypot(pickup[0] - px, pickup[1] - py) if pickup else float("inf")
     d_c2 = math.hypot(charge2[0] - px, charge2[1] - py) if charge2 else float("inf")
+    d_goal = math.hypot(goal_pt[0] - px, goal_pt[1] - py)
     mode = _BAT["mode"]
     if mode == "to_charge":
         carrot = carrot_goal                                # транзит ПО БЕЗПЕЧНОМУ шляху
@@ -406,9 +424,11 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
         carrot = pickup                                     # тримаємось над аптечкою
     elif mode == "to_goal":                                 # несемо аптечку до людини
         carrot = carrot_goal
-        if home is not None and math.hypot(goal_pt[0] - px, goal_pt[1] - py) < ARRIVE_R:
-            _BAT["mode"] = "to_home"                         # ДОСТАВИВ → повертаємось додому
-            _BAT["carrying"] = False                         # аптечку віддали людині
+        if d_goal < PHOTO_APPROACH:
+            _BAT["mode"] = "photographing"                   # підлетіли → зупинка + стабілізація + ФОТО
+            _BAT["photo_pos"] = (px, py)                     # ЗАМИРАЄМО тут (точка НА A*-шляху)
+    elif mode == "photographing":
+        carrot = _BAT.get("photo_pos") or goal_pt            # тримаємось у точці входу, НЕ з'їжджаємо зі шляху
     else:  # ПОВЕРНЕННЯ ДОДОМУ: to_home → charging_home (зарядка!) → to_home2 → done
         home_tr = boost_state.get("home_tracker")
         if home_tr is None or boost_state.get("home_src") is not tracker.path:
@@ -464,7 +484,8 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
     # глушимо мотори (завис), щоб дрон спокійно стояв, а не кружляв.
     if ((_BAT["mode"] == "grabbing" and d_pick < 1.0)
             or (_BAT["mode"] == "charging" and d_charge < 1.0)
-            or (_BAT["mode"] == "charging_home" and d_c2 < 1.0)):
+            or (_BAT["mode"] == "charging_home" and d_c2 < 1.0)
+            or _BAT["mode"] == "photographing"):   # завмерли в точці входу на весь час зйомки
         return (0.0, 0.0), boosted, carrot
 
     # нормалізувати суму в ОДИНИЧНИЙ вектор
@@ -612,6 +633,17 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
                     _BAT["mode"] = "to_pickup" if _BAT["pickup"] else "to_goal"
                 else:                                # charging_home → летимо далі додому
                     _BAT["mode"] = "to_home2"
+    elif _BAT["mode"] == "photographing":            # стабілізуємось, тоді знімок і доставка
+        if _BAT["pdwell"] == PHOTO_DWELL_TICKS:
+            _BAT["photo"] = True                     # ОДИН тік — робимо знімок
+        elif _BAT["pdwell"] > PHOTO_DWELL_TICKS:
+            _BAT["photo"] = False
+            _BAT["carrying"] = False                 # аптечку віддали людині
+            if _BAT["home"] is not None:
+                _BAT["mode"] = "to_home"             # → повертаємось додому
+            else:
+                _BAT["done"] = True
+        _BAT["pdwell"] += 1
     elif _BAT["mode"] == "grabbing":
         low_enough = (z - terrain.height_at(x, y)) <= GRAB_CLEARANCE + 0.25
         if low_enough:
