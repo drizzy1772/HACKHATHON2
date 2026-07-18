@@ -2053,6 +2053,82 @@ def _draw_status_overlay():
         pass
 
 
+_DETECT_RANGE = 24.0     # дальність AI-виявлення, м
+
+
+def _detect_targets():
+    """[(world_pos, label, color)] — об'єкти, які «розпізнає» камера дрона."""
+    out = []
+    named = {
+        "Person":   ("Людина",   (0.25, 0.60, 1.0)),
+        "FuelTank": ("Бензобак",  (0.98, 0.55, 0.10)),
+        "Medkit":   ("Аптечка",   (0.95, 0.20, 0.20)),
+    }
+    for name, (label, col) in named.items():
+        o = bpy.data.objects.get(name)
+        if o is not None:
+            out.append((o.matrix_world.translation.copy(), label, col))
+    for o in bpy.data.objects:                       # фури-чекпоінти = машини
+        if o.name.endswith("_truck"):
+            out.append((o.matrix_world.translation.copy(), "Машина", (0.95, 0.85, 0.25)))
+    md = _RUNTIME.get("md")                           # уламок техніки
+    wi = getattr(md, "wreck_index", None) if md is not None else None
+    if wi is not None:
+        w = bpy.data.objects.get("TREE_%03d" % wi)
+        if w is not None:
+            out.append((w.matrix_world.translation.copy(), "Техніка", (0.80, 0.45, 0.95)))
+    return out
+
+
+def _draw_object_detection():
+    """AI-виявлення об'єктів: рамка + підпис над кожним об'єктом у полі зору дрона."""
+    tel = _RUNTIME.get("telemetry")
+    region = getattr(bpy.context, "region", None)
+    rv3d = getattr(bpy.context, "region_data", None)
+    if tel is None or region is None or rv3d is None:
+        return
+    try:
+        import gpu
+        import blf
+        import math as _m
+        from gpu_extras.batch import batch_for_shader
+        from bpy_extras.view3d_utils import location_3d_to_region_2d
+
+        drone = (tel["x"], tel["y"], tel["z"])
+        sh = gpu.shader.from_builtin("UNIFORM_COLOR")
+        gpu.state.line_width_set(2.0)
+        gpu.state.blend_set("ALPHA")
+        font = 0
+        n_det = 0
+        for wpos, label, col in _detect_targets():
+            d = _m.dist(drone, (wpos.x, wpos.y, wpos.z))
+            if d > _DETECT_RANGE:
+                continue
+            p = location_3d_to_region_2d(region, rv3d, wpos)
+            if p is None:                            # позаду камери
+                continue
+            s = max(26.0, 560.0 / max(1.5, d))       # рамка більша зблизька
+            x0, y0, x1, y1 = p.x - s / 2, p.y - s / 2, p.x + s / 2, p.y + s / 2
+            sh.bind()
+            sh.uniform_float("color", (col[0], col[1], col[2], 0.95))
+            batch_for_shader(sh, "LINE_STRIP",
+                             {"pos": [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0)]}).draw(sh)
+            conf = 82 + (hash(label) % 17)           # псевдо-впевненість 82–98%
+            blf.size(font, 13)
+            blf.color(font, col[0], col[1], col[2], 1.0)
+            blf.position(font, x0, y1 + 4, 0)
+            blf.draw(font, "%s %d%%" % (label, conf))
+            n_det += 1
+        if n_det:                                    # лічильник угорі-праворуч
+            blf.size(font, 15)
+            blf.color(font, 0.2, 1.0, 0.4, 1.0)
+            blf.position(font, region.width - 210, region.height - 40, 0)
+            blf.draw(font, "AI DETECT: %d об'єктів" % n_det)
+        gpu.state.line_width_set(1.0)
+    except Exception:                                # noqa: BLE001 — оверлей не має ламати гру
+        pass
+
+
 def _draw_overlay():
     """Єдиний зареєстрований колбек: телеметрійна панель (з гіроскопом) угорі
     ліворуч — ОДНА й та сама і в Chase, і в FPV — + радар лідара, зверху —
@@ -2068,6 +2144,7 @@ def _draw_overlay():
     _draw_flight_hud()
     _draw_lidar_radar()
     _draw_apf_map()
+    _draw_object_detection()
     _draw_status_overlay()
 
 

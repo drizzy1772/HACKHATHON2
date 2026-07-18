@@ -318,6 +318,15 @@ def _build_mission_markers(md, cfg, terrain):
             arm = bpy.context.active_object; arm.name = f"PersonArm{side}"
             arm.rotation_euler = (0.25 * side, 0.0, 0.0)
             arm.data.materials.append(skin)
+
+        # бензобак — помаранчева бочка (об'єкт для AI-виявлення)
+        fx, fy = (float(md.start[0]) + gx) * 0.5 + 3.0, (float(md.start[1]) + gy) * 0.5 - 3.0
+        fz = terrain.height_at(fx, fy)
+        orange = scene.make_material("FuelTankMat", (0.95, 0.50, 0.08, 1.0))
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.5, depth=1.2, location=(fx, fy, fz + 0.6))
+        tank = bpy.context.active_object
+        tank.name = "FuelTank"
+        tank.data.materials.append(orange)
     except Exception as exc:                        # noqa: BLE001 — маркери не мають ламати сцену
         print("Маркери місії: не створено —", exc)
 
