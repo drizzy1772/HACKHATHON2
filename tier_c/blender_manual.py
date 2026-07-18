@@ -572,6 +572,388 @@ def build_scene_from_mapdata(md, cfg):
     return _build_scene_visuals(md, cfg)
 
 
+# ── Готова 3D-мапа міста (напр. КПІ) для РУЧНОГО польоту ──────────────────────────
+# Місто = декорація: жодного A*/дерев/чекпоінтів. Дрон літає вільно клавіатурою,
+# межі й стеля навмисне величезні, рельєф — плаский на рівні землі.
+
+class _FlatTerrain:
+    """Заглушка рельєфу: рівна земля на висоті z0 (місто має власний меш Ground)."""
+    def __init__(self, z0=0.0):
+        self.z0 = float(z0)
+    def height_at(self, x, y):
+        return self.z0
+
+
+class _CityMap:
+    """Заглушка MapData для міста: порожні перешкоди, великі межі/стеля."""
+    def __init__(self, start, bounds, ceiling, terrain=None):
+        self.start = tuple(start)
+        self.bounds = float(bounds)
+        self.ceiling = float(ceiling)
+        self.trees = []
+        self.obstacles = []
+        self.checkpoints = []
+        self.wreck_index = -1
+        self.wreck_kind = ""
+        self.seed = "КПІ"
+        self._terrain = terrain
+    def terrain(self, cfg=None):
+        return self._terrain
+    def to_dict(self):
+        return {}
+
+
+CITY_MAPS = {
+    "kpi": "map_kpi/KPI_3D_map.blend",
+    "solomianskyi": "map_kpi/Solomianskyi_3D_map.blend",
+}
+
+
+def _city_buildings():
+    """Дахи будівель міста: (cx, cy, top_z, height) для кожного меша вищого за 8 м
+    (будівлі), крім ліхтарів/землі/зелені/маркерів. Для маршруту дах-у-дах."""
+    skip = ("Lamp", "Ground", "Green", "DroneSpawn", "Camera", "Sun", "_lbl",
+            "ChargePad", "Medkit", "Person", "Drone")
+    out = []
+    for o in bpy.data.objects:
+        if o.type != "MESH" or any(s in o.name for s in skip):
+            continue
+        cs = [o.matrix_world @ mathutils.Vector(c) for c in o.bound_box]
+        zs = [c.z for c in cs]; xs = [c.x for c in cs]; ys = [c.y for c in cs]
+        h = max(zs) - min(zs)
+        if h > 8.0:
+            out.append(((min(xs) + max(xs)) / 2.0, (min(ys) + max(ys)) / 2.0, max(zs), h))
+    return out
+
+
+def _nearest_roof(bldgs, xy):
+    if not bldgs:
+        return None
+    return min(bldgs, key=lambda b: (b[0] - xy[0]) ** 2 + (b[1] - xy[1]) ** 2)
+
+
+def _ground_z_at(x, y):
+    """Висота поверхні під (x, y) через рейкаст униз (дах будівлі або земля ~0)."""
+    scene = bpy.context.scene
+    dg = bpy.context.evaluated_depsgraph_get()
+    hit, loc, *_rest = scene.ray_cast(dg, (x, y, 400.0), (0.0, 0.0, -1.0))
+    return loc.z if hit else 0.0
+
+
+def _pick_ground_spots(center, n=2, radii=(45, 60, 78, 95), spread=45.0):
+    """Знайти n ВІДКРИТИХ ділянок землі (поверхня < 3 м) навколо center — щоб аптечка
+    й постраждалий стояли на землі, а не втикались у будівлю."""
+    spots = []
+    for r in radii:
+        for a in range(0, 360, 24):
+            x = center[0] + r * math.cos(math.radians(a))
+            y = center[1] + r * math.sin(math.radians(a))
+            if _ground_z_at(x, y) < 3.0 and all(math.hypot(x - s[0], y - s[1]) > spread for s in spots):
+                spots.append((x, y, 0.0))
+                if len(spots) >= n:
+                    return spots
+    return spots
+
+
+def _pick_roof_waypoints(bldgs, home, n=3, lo=70.0, hi=300.0, spread=70.0):
+    """Обрати n дахів на помірній відстані від home і рознесених між собою."""
+    hx, hy = home[0], home[1]
+    cand = [b for b in bldgs
+            if b is not home and lo < math.hypot(b[0] - hx, b[1] - hy) < hi]
+    cand.sort(key=lambda b: math.hypot(b[0] - hx, b[1] - hy))
+    picked = []
+    for b in cand:
+        if all(math.hypot(b[0] - p[0], b[1] - p[1]) > spread for p in picked):
+            picked.append(b)
+        if len(picked) >= n:
+            break
+    for b in cand:                                   # добір, якщо рознесення надто суворе
+        if len(picked) >= n:
+            break
+        if b not in picked:
+            picked.append(b)
+    return picked[:n]
+
+
+def setup_city_map(map_key):
+    """Відкрити готову 3D-сцену міста, спавнити дрон на DroneSpawn і підготувати
+    _RUNTIME під РУЧНИЙ політ. map_key — ключ із CITY_MAPS або прямий шлях до .blend."""
+    base = os.path.dirname(os.path.abspath(__file__))
+    rel = CITY_MAPS.get(map_key.lower(), map_key)
+    path = rel if os.path.isabs(rel) else os.path.join(base, rel)
+    bpy.ops.wm.open_mainfile(filepath=path)              # завантажуємо місто
+
+    spawn = bpy.data.objects.get("DroneSpawn")
+    if spawn is not None:
+        sx, sy, _sz = spawn.matrix_world.translation
+    else:
+        sx, sy = 0.0, 0.0                                # запасний старт — центр
+    ground_z = 0.0
+    # СПАВН НА ДАХУ найближчої будівлі (не з землі/крізь текстури) — дрон з даху на дах
+    bldgs = _city_buildings()
+    home = _nearest_roof(bldgs, (sx, sy))
+    if home is not None:
+        start = (home[0], home[1], home[2] + 2.0)        # 2 м над дахом
+    else:
+        start = (float(sx), float(sy), ground_z + 3.0)   # запасно — над землею
+    _RUNTIME["_city_bldgs"] = bldgs                       # кеш для автономного маршруту
+    _RUNTIME["_city_home"] = home
+
+    # Маркер спавну — величезна піраміда, що заслоняє дрон: ховаємо (лишаємо кільце як «майданчик»)
+    for nm in ("DroneSpawn", "DroneSpawn_lbl"):
+        o = bpy.data.objects.get(nm)
+        if o is not None:
+            o.hide_render = True
+            o.hide_viewport = True
+
+    if "World" not in bpy.data.worlds:                   # у міста світ під іншою назвою — animate_drone
+        bpy.data.worlds.new("World")                     # шукає саме "World", інакше KeyError
+    animate_drone.setup_world_and_light()                # у міста лише 1 лампа — додаємо сонце/небо
+    # яскравіше денне світло — велика відкрита сцена з темним асфальтом
+    try:
+        bpy.context.scene.world.node_tree.nodes["Background"].inputs["Strength"].default_value = 1.7
+    except Exception:                                    # noqa: BLE001
+        pass
+    _sun = bpy.data.objects.get("Sun")
+    if _sun is not None and _sun.type == "LIGHT":
+        _sun.data.energy = 5.0
+    drone = animate_drone.make_drone(arm=1.0)            # більший дрон — видно в масштабі міста
+    fpv, chase = animate_drone.add_cameras(drone)
+    bpy.context.scene.camera = chase
+    # Кліпінг: у величезному місті надто широкий діапазон near/far убиває точність
+    # z-буфера → текстури «миготять» (z-fighting). Звужуємо для стабільної картинки.
+    for _cam in (chase, fpv):
+        if _cam is not None and _cam.type == "CAMERA":
+            _cam.data.clip_start = 0.8
+            _cam.data.clip_end = 2500.0
+    drone.matrix_world = mathutils.Matrix.Translation(mathutils.Vector(start))
+    propellers.sync_propellers_for_vehicle(drone, "drone")
+
+    _lock_scene_selection()
+    bpy.context.scene.render.engine = 'BLENDER_EEVEE'
+
+    cfg = dataclasses.replace(CFG, bounds=3000.0)         # величезна арена — усе місто
+    terrain = _FlatTerrain(ground_z)
+    md = _CityMap(start=start, bounds=3000.0, ceiling=400.0, terrain=terrain)
+
+    _RUNTIME.update({
+        "cfg": cfg, "md": md, "terrain": terrain, "start": tuple(start),
+        "drone": drone, "fpv": fpv, "chase": chase, "cam_fpv": False,
+        "quad": None, "status": STATUS_RUNNING, "running": False, "telemetry": None,
+        "crash_text": None, "trajectory": None, "traj_frame": 0, "traj_hz": None,
+        "traj_seed": None, "lidar_obs": ([], [], []), "lidar_angles": [],
+        "vehicle": "drone", "switch_grace": 0, "apf_field": None,
+    })
+    _update_chase_camera_pose(start, 0.0)
+    print("МАПА МІСТА:", path, "старт", start)
+    return drone
+
+
+# ── АВТОНОМНА МІСІЯ: ДАХ → ПАРК (обхід дерев, як у лісі) → ДАХ ────────────────────
+# Дрон злітає з даху, спускається у ПАРК на нижчому рівні й ОБЛІТАЄ дерева (APF —
+# притягання до цілі + відштовхування від стовбурів), робить дії (заряд/аптечка/
+# доставка), вилітає з парку крізь дерева й повертається на дах бази.
+
+CITY_HOVER = 3.0          # висота зависання над точкою, м
+CITY_CRUISE_MARGIN = 16.0 # крейсер вище найвищої будівлі, м
+CITY_HSPEED = 38.0        # горизонтальна крейсерська швидкість, м/с
+CITY_VSPEED = 15.0        # вертикальна швидкість, м/с
+CITY_PARK_ALT = 3.5       # висота польоту в парку (між стовбурами), м над землею
+CITY_PARK_HSPEED = 9.0    # швидкість у парку (повільніше — облітаємо дерева), м/с
+PARK_R = 30.0             # радіус парку, м
+PARK_TREE_R = 1.9         # радіус стовбура (перешкоди), м
+PARK_N_TREES = 16
+APF_K_ATT = 1.0           # притягання до цілі
+APF_K_REP = 8.0           # відштовхування від дерева (форма Хатіба 1/dist)
+APF_INFLU = 8.5           # радіус впливу дерева, м
+
+
+def _spawn_named(add_call, name, rgba):
+    """Створити примітив (add_call) і присвоїти ім'я+матеріал, не покладаючись на
+    bpy.context.object (у GUI-main() його може не бути) — беремо через різницю."""
+    before = set(bpy.data.objects)
+    add_call()
+    o = (set(bpy.data.objects) - before).pop()
+    o.name = name
+    o.data.materials.append(animate_drone.make_material(name + "Mat", rgba))
+    return o
+
+
+def _build_park_trees(center, radius, avoid, n=PARK_N_TREES):
+    """Розкидати дерева-конуси в парку (детерміновано) на ВІДКРИТІЙ землі, оминаючи
+    точки місії avoid. Повертає список перешкод (x, y, r) для APF-обходу."""
+    rng = random.Random(7)
+    trees, tries = [], 0
+    while len(trees) < n and tries < 500:
+        tries += 1
+        a = rng.uniform(0.0, 2.0 * math.pi)
+        rr = rng.uniform(7.0, radius)
+        x = center[0] + rr * math.cos(a)
+        y = center[1] + rr * math.sin(a)
+        if _ground_z_at(x, y) > 3.0:                      # не на будівлі — лише земля
+            continue
+        if any(math.hypot(x - p[0], y - p[1]) < 6.0 for p in avoid):
+            continue
+        if any(math.hypot(x - t[0], y - t[1]) < 5.5 for t in trees):
+            continue
+        trees.append((x, y, PARK_TREE_R))
+        _spawn_named(lambda: bpy.ops.mesh.primitive_cone_add(
+            radius1=2.3, depth=7.0, location=(x, y, 3.5)),
+            "ParkTree_%d" % len(trees), (0.13, 0.5, 0.2, 1))
+    return trees
+
+
+def simulate_city_mission(start, wps, trees, cruise_z, hz=30):
+    """Траєкторія ДАХ → ПАРК (APF-обхід дерев) → ДАХ у форматі кадрів реплею.
+    wps — dict (x,y,z): entry, charge, pickup, goal, exit, home. trees — (x,y,r)."""
+    dt = 1.0 / hz
+    park_alt = CITY_PARK_ALT
+    st = {"x": start[0], "y": start[1], "z": start[2], "yaw": 0.0,
+          "carry": False, "deliv": False}
+    frames = []
+
+    def emit(phase, pitch=0.0, speed=0.0, photo=False):
+        frames.append({"x": st["x"], "y": st["y"], "z": st["z"], "yaw": st["yaw"],
+                       "pitch": pitch, "roll": 0.0, "speed": speed, "status": "RUNNING",
+                       "carrying": st["carry"], "delivered": st["deliv"],
+                       "photo": photo, "phase": phase, "lidar": []})
+
+    def climb_to(tz, phase):
+        while abs(st["z"] - tz) > 0.15:
+            step = min(CITY_VSPEED * dt, abs(tz - st["z"]))
+            st["z"] += step if tz > st["z"] else -step
+            emit(phase, speed=CITY_VSPEED)
+
+    def fly_to(tx, ty, phase):                            # прямий крейсер (над містом, без дерев)
+        while math.hypot(tx - st["x"], ty - st["y"]) > 0.6:
+            d = math.hypot(tx - st["x"], ty - st["y"])
+            step = min(CITY_HSPEED * dt, d)
+            st["yaw"] = math.atan2(ty - st["y"], tx - st["x"])
+            st["x"] += (tx - st["x"]) / d * step
+            st["y"] += (ty - st["y"]) / d * step
+            emit(phase, pitch=-0.12, speed=CITY_HSPEED)
+
+    def apf_fly(tx, ty, phase):                           # у ПАРКУ: обхід дерев (APF)
+        step_len = CITY_PARK_HSPEED * dt
+        last_d, stall, guard = 1e9, 0, 0
+        while math.hypot(tx - st["x"], ty - st["y"]) > 1.2 and guard < 6000:
+            guard += 1
+            gx, gy = tx - st["x"], ty - st["y"]
+            dg = math.hypot(gx, gy) or 1e-6
+            fx, fy = APF_K_ATT * gx / dg, APF_K_ATT * gy / dg      # притягання
+            for cx, cy, cr in trees:                                # відштовхування
+                rx, ry = st["x"] - cx, st["y"] - cy
+                dc = math.hypot(rx, ry) or 1e-6
+                surf = dc - cr
+                if surf < APF_INFLU:
+                    s = max(surf, 0.4)
+                    rep = APF_K_REP * (1.0 / s - 1.0 / APF_INFLU) / (s * s)
+                    fx += rep * rx / dc; fy += rep * ry / dc
+            if dg > last_d - 0.02:                                  # застрягли — поштовх убік
+                stall += 1
+            else:
+                stall = 0
+            last_d = dg
+            if stall > 20:
+                fx += -gy / dg * 1.2; fy += gx / dg * 1.2
+            n = math.hypot(fx, fy) or 1e-6
+            st["x"] += fx / n * step_len; st["y"] += fy / n * step_len
+            st["yaw"] = math.atan2(fy, fx); st["z"] = park_alt
+            emit(phase, pitch=-0.08, speed=CITY_PARK_HSPEED)
+
+    def dwell(sec, phase, photo_at=None):
+        for k in range(int(sec * hz)):
+            emit(phase, photo=(photo_at is not None and k == photo_at))
+
+    entry, charge = wps["entry"], wps["charge"]
+    pickup, goal, exit_, home = wps["pickup"], wps["goal"], wps["exit"], wps["home"]
+
+    climb_to(cruise_z, "to_charge")                       # зліт з даху бази
+    fly_to(entry[0], entry[1], "to_charge")               # крейсер до входу в парк
+    climb_to(park_alt, "to_charge")                       # СПУСК у парк (нижчий рівень)
+    apf_fly(charge[0], charge[1], "to_charge")            # облітаємо дерева до зарядки
+    dwell(2.0, "charging")
+    apf_fly(pickup[0], pickup[1], "to_pickup")            # до аптечки (крізь дерева)
+    dwell(1.0, "grabbing"); st["carry"] = True; dwell(0.6, "grabbing")
+    apf_fly(goal[0], goal[1], "to_goal")                  # до постраждалого (крізь дерева)
+    st["carry"] = False; st["deliv"] = True
+    dwell(1.2, "photographing"); dwell(0.1, "photographing", photo_at=0)
+    dwell(1.0, "photographing")
+    apf_fly(exit_[0], exit_[1], "to_home")                # ВИЛІТ із парку крізь дерева
+    climb_to(cruise_z, "to_home")                         # підйом на крейсер
+    fly_to(home[0], home[1], "to_home")                   # назад до бази
+    climb_to(home[2] + 2.0, "to_home")                    # посадка на дах
+    dwell(0.5, "to_home")
+    frames[-1]["status"] = "FINISHED"
+    return frames
+
+
+def _build_city_markers(charge, pickup, goal):
+    """Маркери місії на ЗЕМЛІ в парку: зарядна платформа, аптечка (+хрест), постраждалий."""
+    def _cube(name, loc, size, rgba):
+        return _spawn_named(lambda: bpy.ops.mesh.primitive_cube_add(size=size, location=loc), name, rgba)
+    def _cyl(name, loc, r, depth, rgba):
+        return _spawn_named(lambda: bpy.ops.mesh.primitive_cylinder_add(radius=r, depth=depth, location=loc), name, rgba)
+    # зарядна платформа — зелений диск на землі
+    _cyl("ChargePad", (charge[0], charge[1], charge[2] + 0.2), 3.5, 0.4, (0.15, 0.8, 0.35, 1))
+    # аптечка — маленький червоний куб + хрест (щоб не поглинала камеру під дроном)
+    _cube("Medkit", (pickup[0], pickup[1], pickup[2] + 0.6), 0.7, (0.85, 0.12, 0.12, 1))
+    _cube("MedkitCrossH", (pickup[0], pickup[1], pickup[2] + 0.85), 0.55, (1, 1, 1, 1)).scale = (1.0, 0.28, 0.16)
+    # постраждалий — тіло + голова, стоїть на землі
+    _cyl("PersonBody", (goal[0], goal[1], goal[2] + 1.1), 0.5, 2.2, (0.2, 0.35, 0.9, 1))
+    _spawn_named(lambda: bpy.ops.mesh.primitive_uv_sphere_add(radius=0.5, location=(goal[0], goal[1], goal[2] + 2.5)),
+                 "PersonHead", (0.9, 0.75, 0.6, 1))
+
+
+def setup_city_autonomous(map_key):
+    """Місто + автономна місія: дах бази → парк (обхід дерев) → дах бази."""
+    drone = setup_city_map(map_key)
+    R = _RUNTIME
+    start = R["start"]                                     # дрон уже на даху бази
+    bldgs = R.get("_city_bldgs") or _city_buildings()
+    home_b = R.get("_city_home") or _nearest_roof(bldgs, (start[0], start[1]))
+    home = (start[0], start[1], home_b[2] if home_b else 0.0)
+
+    # ЦЕНТР ПАРКУ — велика відкрита ділянка землі неподалік бази
+    pc_list = _pick_ground_spots((start[0], start[1]), n=1, radii=(70, 90, 110, 130), spread=1.0)
+    pcx, pcy = pc_list[0][:2] if pc_list else (start[0] + 90.0, start[1] + 20.0)
+    # напрямок база→парк (вхід із ближнього боку, вихід із дальнього)
+    ex, ey = pcx - start[0], pcy - start[1]
+    en = math.hypot(ex, ey) or 1.0
+    ux, uy = ex / en, ey / en
+    px, py = -uy, ux                                       # перпендикуляр
+    def pt(a, b):                                          # точка в системі парку (вздовж, вбік)
+        return (pcx + ux * a + px * b, pcy + uy * a + py * b, 0.0)
+    entry  = pt(-PARK_R * 0.95, 0.0)
+    exit_  = pt(PARK_R * 0.95, 4.0)
+    charge = pt(-12.0, -12.0)
+    pickup = pt(2.0, 11.0)
+    goal   = pt(14.0, -8.0)
+
+    trees = _build_park_trees((pcx, pcy), PARK_R, avoid=[entry, exit_, charge, pickup, goal])
+    _build_city_markers(charge, pickup, goal)
+    R["md"].checkpoints = [(goal[0], goal[1], goal[2])]   # ціль для фото-штампу/Discord
+
+    near = [b for b in bldgs if math.hypot(b[0] - home[0], b[1] - home[1]) < 260]
+    cruise_z = (max([home[2]] + [b[2] for b in near]) if near else home[2]) + CITY_CRUISE_MARGIN
+
+    wps = {"entry": entry, "charge": charge, "pickup": pickup,
+           "goal": goal, "exit": exit_, "home": home}
+    frames = simulate_city_mission(start, wps, trees, cruise_z)
+    R.update({
+        "trajectory": frames, "traj_hz": 30, "traj_frame": 0, "traj_seed": "kpi",
+        "photo_done": False,
+        "medkit_carry_dz": 0.9,                           # аптечка висить нижче дрона (не «в дроні»)
+        "medkit_home": (pickup[0], pickup[1], pickup[2] + 0.6),
+        "medkit_cross_home": (pickup[0], pickup[1], pickup[2] + 0.85),
+        "medkit_delivered": (goal[0] + 3.0, goal[1], goal[2] + 0.5),
+        "medkit_delivered_cross": (goal[0] + 3.0, goal[1], goal[2] + 0.75),
+    })
+    print("МІСІЯ ДАХ→ПАРК→ДАХ:", len(frames), "кадрів;", len(trees), "дерев; cruise=%.0f" % cruise_z,
+          "парк=(%.0f,%.0f)" % (pcx, pcy))
+    return drone
+
+
 # ── Модальний оператор польоту ────────────────────────────────────────────────────
 
 class DRONE_OT_manual(bpy.types.Operator):
@@ -855,10 +1237,11 @@ class DRONE_OT_autonomous(bpy.types.Operator):
         _med = bpy.data.objects.get("Medkit")
         _cross = bpy.data.objects.get("MedkitCrossH")
         if frame.get("carrying"):                    # несемо — під дроном
+            _dz = _RUNTIME.get("medkit_carry_dz", 0.35)  # у місті дрон більший → аптечка нижче
             if _med is not None:
-                _med.location = (frame["x"], frame["y"], frame["z"] - 0.35)
+                _med.location = (frame["x"], frame["y"], frame["z"] - _dz)
             if _cross is not None:
-                _cross.location = (frame["x"], frame["y"], frame["z"] - 0.23)
+                _cross.location = (frame["x"], frame["y"], frame["z"] - _dz + 0.12)
         elif frame.get("delivered"):                 # доставлено — лежить біля людини
             _d = _RUNTIME.get("medkit_delivered")
             _dc = _RUNTIME.get("medkit_delivered_cross")
@@ -2249,42 +2632,56 @@ def _take_photo(frame):
         print("Фото: помилка —", exc)
 
 
-# >>> ВСТАВ СЮДИ URL СВОГО DISCORD-ВЕБХУКА (Server → Settings → Integrations →
-#     Webhooks → New Webhook → Copy Webhook URL). Або задай env SKYRUN_DISCORD_WEBHOOK.
-DISCORD_WEBHOOK_URL = "https://discordapp.com/api/webhooks/1528012427940069517/10RnjP8NlqC9U7kSNb0Ku2j5hvAtRH2dTKfAi5PgnSoXNCl_ZGqIfYi7jwsk0nArUf9Z"
+# >>> DISCORD-ВЕБХУКИ: знімок шлеться В УСІ сервери зі списку (Server → Settings →
+#     Integrations → Webhooks → New Webhook → Copy Webhook URL). Додай новий рядком.
+#     Можна також задати env SKYRUN_DISCORD_WEBHOOK (додається до списку).
+DISCORD_WEBHOOK_URLS = [
+    "https://discordapp.com/api/webhooks/1528038431496732753/MAD-6AYqPGW6liQaDQwTZPLmv2PT6raGEJntj_XN1a54qV9Ky4ByH5UwcePJYPtD56gO",  # сервер 1
+    # "https://discord.com/api/webhooks/.../...",   # <<< ВСТАВ URL ВЕБХУКА НОВОГО СЕРВЕРА ТУТ
+]
+
+
+def _post_discord(url, path, note):
+    """Один multipart-POST знімка у вебхук (лише stdlib urllib)."""
+    import os, urllib.request
+    with open(path, "rb") as fh:
+        data = fh.read()
+    boundary = "----SkyRunBoundary7f3a9c2e"
+    pre = (
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"content\"\r\n\r\n"
+        "%s\r\n"
+        "--%s\r\n"
+        "Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
+        "Content-Type: image/png\r\n\r\n"
+    ) % (boundary, note, boundary, os.path.basename(path))
+    body = pre.encode("utf-8") + data + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary,
+                 # Discord відхиляє дефолтний Python-urllib UA (403) — треба свій
+                 "User-Agent": "SkyRun-Drone/1.0 (https://github.com/drizzy1772)"})
+    with urllib.request.urlopen(req, timeout=20) as resp:
+        return resp.status
 
 
 def _send_discord(path, note):
-    """Надіслати знімок у Discord через вебхук (multipart POST, лише stdlib urllib).
-    Якщо URL не заданий — тихо пропускаємо (демо не залежить від Discord)."""
+    """Надіслати знімок в УСІ Discord-вебхуки (список + env). Порожньо → пропускаємо."""
     import os
-    url = os.environ.get("SKYRUN_DISCORD_WEBHOOK") or DISCORD_WEBHOOK_URL
-    if not url:
-        print("Discord: пропущено (встав URL у DISCORD_WEBHOOK_URL або задай SKYRUN_DISCORD_WEBHOOK).")
+    urls = list(DISCORD_WEBHOOK_URLS)
+    env_url = os.environ.get("SKYRUN_DISCORD_WEBHOOK")
+    if env_url:
+        urls.append(env_url)
+    urls = [u for u in urls if u and u.startswith("http")]     # відкидаємо порожні/коментарі
+    if not urls:
+        print("Discord: пропущено (додай URL у DISCORD_WEBHOOK_URLS).")
         return
-    try:
-        import urllib.request
-        with open(path, "rb") as fh:
-            data = fh.read()
-        boundary = "----SkyRunBoundary7f3a9c2e"
-        pre = (
-            "--%s\r\n"
-            "Content-Disposition: form-data; name=\"content\"\r\n\r\n"
-            "%s\r\n"
-            "--%s\r\n"
-            "Content-Disposition: form-data; name=\"file\"; filename=\"%s\"\r\n"
-            "Content-Type: image/png\r\n\r\n"
-        ) % (boundary, note, boundary, os.path.basename(path))
-        body = pre.encode("utf-8") + data + ("\r\n--%s--\r\n" % boundary).encode("utf-8")
-        req = urllib.request.Request(
-            url, data=body,
-            headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary,
-                     # Discord відхиляє дефолтний Python-urllib UA (403) — треба свій
-                     "User-Agent": "SkyRun-Drone/1.0 (https://github.com/drizzy1772)"})
-        with urllib.request.urlopen(req, timeout=20) as resp:
-            print("Discord: знімок надіслано (HTTP %s)" % resp.status)
-    except Exception as exc:                          # noqa: BLE001 — Discord не має ламати гру
-        print("Discord: помилка —", exc)
+    for i, url in enumerate(urls, 1):
+        try:
+            st = _post_discord(url, path, note)
+            print("Discord: сервер %d — надіслано (HTTP %s)" % (i, st))
+        except Exception as exc:                       # noqa: BLE001 — Discord не має ламати гру
+            print("Discord: сервер %d — помилка: %s" % (i, exc))
 
 
 def _email_photo(path, note):
@@ -2431,19 +2828,29 @@ def main():
         return
 
     global _FLIGHT_MODE
-    # Режим і сід можна задати через env (для однорядкових команд запуску):
+    # Режим/сід/мапа з env (для однорядкових команд запуску):
+    #   SKYRUN_MAP=kpi          → готова 3D-мапа міста (лише РУЧНИЙ політ)
     #   SKYRUN_MODE=autonomous  → автономний політ; типово (не задано) — ручний
-    #   SKYRUN_SEED=2026        → фіксована мапа; типово — випадкова
-    if os.environ.get("SKYRUN_MODE", "").lower() in ("auto", "autonomous"):
-        _FLIGHT_MODE = "autonomous"
-    seed = _random_seed()           # кожен запуск учасника — нова випадкова мапа
-    _env_seed = os.environ.get("SKYRUN_SEED")
-    if _env_seed:
-        try:
-            seed = int(_env_seed)
-        except ValueError:
-            pass
-    build_scene(seed=seed)          # ручний режим (сирий рушій) — типовий старт
+    #   SKYRUN_SEED=2026        → фіксована процедурна мапа; типово — випадкова
+    city = os.environ.get("SKYRUN_MAP")
+    if city:
+        if os.environ.get("SKYRUN_MODE", "").lower() in ("auto", "autonomous"):
+            _FLIGHT_MODE = "autonomous"   # місто + автономна місія над дахами
+            setup_city_autonomous(city)
+        else:
+            _FLIGHT_MODE = "manual"       # місто + ручний політ
+            setup_city_map(city)
+    else:
+        if os.environ.get("SKYRUN_MODE", "").lower() in ("auto", "autonomous"):
+            _FLIGHT_MODE = "autonomous"
+        seed = _random_seed()       # кожен запуск учасника — нова випадкова мапа
+        _env_seed = os.environ.get("SKYRUN_SEED")
+        if _env_seed:
+            try:
+                seed = int(_env_seed)
+            except ValueError:
+                pass
+        build_scene(seed=seed)      # ручний режим (сирий рушій) — типовий старт
 
     for cls in (DRONE_OT_manual, DRONE_OT_autonomous, DRONE_OT_reset,
                 DRONE_OT_toggle_camera, DRONE_OT_switch_vehicle,
