@@ -178,17 +178,18 @@ CHARGE_DWELL_TICKS = 90    # тримаємось на станції ~3 с (90 
 # Старт → ЗАРЯДКА (окрема точка) → АПТЕЧКА (окрема точка, опускаємось+беремо,
 # вона ПРИЛИПАЄ) → ЦІЛЬ (везе людині).
 _BAT = {"level": 100.0, "mode": "to_goal", "charge": None, "pickup": None,
-        "home": None, "done": False,
+        "charge2": None, "home": None, "done": False,
         "mark": 100, "carrying": False, "dwell": 0, "cdwell": 0}
 
 
 def _mission_reset(path, charge, pickup) -> None:
-    """Новий прогін: повний заряд, точки місії, ще не несемо. home = старт (куди
-    повертатись після доставки), якщо є місія."""
+    """Новий прогін: повний заряд, точки місії, ще не несемо. home = старт;
+    charge2 = зарядка НА ЗВОРОТНОМУ шляху (середина маршруту)."""
     _BAT.update(level=100.0, mark=100, carrying=False, dwell=0, cdwell=0, done=False)
     _BAT["charge"] = tuple(charge) if charge else None
     _BAT["pickup"] = tuple(pickup) if pickup else None
     _BAT["home"] = tuple(path[0]) if (pickup and path and len(path) >= 2) else None
+    _BAT["charge2"] = tuple(path[len(path) // 2]) if (pickup and path and len(path) >= 6) else None
     _BAT["mode"] = "to_charge" if _BAT["charge"] else ("to_pickup" if _BAT["pickup"] else "to_goal")
 
 
@@ -378,8 +379,11 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
     # A*-шляху (усі точки — на маршруті).
     charge = _BAT["charge"]
     pickup = _BAT["pickup"]
+    charge2 = _BAT["charge2"]
+    home = _BAT["home"]
     d_charge = math.hypot(charge[0] - px, charge[1] - py) if charge else float("inf")
     d_pick = math.hypot(pickup[0] - px, pickup[1] - py) if pickup else float("inf")
+    d_c2 = math.hypot(charge2[0] - px, charge2[1] - py) if charge2 else float("inf")
     mode = _BAT["mode"]
     if mode == "to_charge":
         carrot = carrot_goal                                # транзит ПО БЕЗПЕЧНОМУ шляху
@@ -396,20 +400,23 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
         carrot = pickup                                     # тримаємось над аптечкою
     elif mode == "to_goal":                                 # несемо аптечку до людини
         carrot = carrot_goal
-        home = _BAT["home"]
         if home is not None and math.hypot(goal_pt[0] - px, goal_pt[1] - py) < ARRIVE_R:
             _BAT["mode"] = "to_home"                         # ДОСТАВИВ → повертаємось додому
             _BAT["carrying"] = False                         # аптечку віддали людині
-    else:  # to_home — летимо назад на старт ПО ТОМУ Ж безпечному шляху (у зворотному боці)
+    else:  # ПОВЕРНЕННЯ ДОДОМУ: to_home → charging_home (зарядка!) → to_home2 → done
         home_tr = boost_state.get("home_tracker")
         if home_tr is None or boost_state.get("home_src") is not tracker.path:
             home_tr = CurvatureTracker(list(reversed(tracker.path)), simplify_eps=p.simplify_eps)
             boost_state["home_tracker"] = home_tr
-            boost_state["home_src"] = tracker.path      # будуємо ОДИН раз, не щотіка
-        carrot = home_tr.lookahead_point(pos, p)
-        home = _BAT["home"]
-        if home is not None and math.hypot(home[0] - px, home[1] - py) < ARRIVE_R:
-            _BAT["done"] = True                              # повернувся додому → місію завершено
+            boost_state["home_src"] = tracker.path      # зворотний шлях, будуємо ОДИН раз
+        if mode == "charging_home":
+            carrot = charge2                             # сідаємо й тримаємось (перехід у step)
+        else:
+            carrot = home_tr.lookahead_point(pos, p)     # летимо зворотним шляхом
+            if mode == "to_home" and charge2 is not None and d_c2 < ARRIVE_R:
+                _BAT["mode"] = "charging_home"; _BAT["cdwell"] = 0   # ПІДЗАРЯДКА на поверненні
+            elif home is not None and math.hypot(home[0] - px, home[1] - py) < ARRIVE_R:
+                _BAT["done"] = True                      # повернувся на вишку → місію завершено
 
     ax, ay = carrot[0] - px, carrot[1] - py
     da = math.hypot(ax, ay)
@@ -449,7 +456,9 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
 
     # 4. ЗУПИНКА НА ТОЧЦІ МІСІЇ: на зарядці або над аптечкою й дуже близько —
     # глушимо мотори (завис), щоб дрон спокійно стояв, а не кружляв.
-    if (_BAT["mode"] == "grabbing" and d_pick < 1.0) or (_BAT["mode"] == "charging" and d_charge < 1.0):
+    if ((_BAT["mode"] == "grabbing" and d_pick < 1.0)
+            or (_BAT["mode"] == "charging" and d_charge < 1.0)
+            or (_BAT["mode"] == "charging_home" and d_c2 < 1.0)):
         return (0.0, 0.0), boosted, carrot
 
     # нормалізувати суму в ОДИНИЧНИЙ вектор
@@ -564,7 +573,7 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
     #    на зарядці СІДАЄМО (низько над землею).
     if _BAT["mode"] == "grabbing":
         clear = GRAB_CLEARANCE
-    elif _BAT["mode"] == "charging":
+    elif _BAT["mode"] in ("charging", "charging_home"):
         clear = CHARGE_CLEARANCE
     else:
         clear = p.alt_clearance
@@ -587,13 +596,16 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
 
     # МІСІЯ/БАТАРЕЯ: на зарядці — заряджаємось; над аптечкою — опускаємось і ЗАБИРАЄМО;
     # інакше — витрачаємо заряд на пройдений шлях.
-    if _BAT["mode"] == "charging":
+    if _BAT["mode"] in ("charging", "charging_home"):
         _BAT["level"] = min(100.0, _BAT["level"] + BATTERY_CHARGE)
         landed = (z - terrain.height_at(x, y)) <= CHARGE_CLEARANCE + 0.25
         if landed:                                   # сіли — рахуємо 3 с витримки
             _BAT["cdwell"] += 1
             if _BAT["cdwell"] >= CHARGE_DWELL_TICKS and _BAT["level"] >= 99.9:
-                _BAT["mode"] = "to_pickup" if _BAT["pickup"] else "to_goal"
+                if _BAT["mode"] == "charging":
+                    _BAT["mode"] = "to_pickup" if _BAT["pickup"] else "to_goal"
+                else:                                # charging_home → летимо далі додому
+                    _BAT["mode"] = "to_home2"
     elif _BAT["mode"] == "grabbing":
         low_enough = (z - terrain.height_at(x, y)) <= GRAB_CLEARANCE + 0.25
         if low_enough:

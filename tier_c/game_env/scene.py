@@ -331,6 +331,31 @@ def _build_mission_markers(md, cfg, terrain):
         print("Маркери місії: не створено —", exc)
 
 
+def _build_tower(md, cfg, terrain):
+    """Вишка на точці спавну — 4 нахилені ноги + платформа + щогла з червоним маячком."""
+    try:
+        sx, sy = float(md.start[0]), float(md.start[1])
+        gz = terrain.height_at(sx, sy)
+        metal = scene.make_material("TowerMat", (0.50, 0.53, 0.60, 1.0))
+        red = scene.make_material("TowerBeaconMat", (1.0, 0.12, 0.12, 1.0))
+        H = 5.0
+        for dx, dy in ((1, 1), (1, -1), (-1, 1), (-1, -1)):           # 4 ноги, нахилені до центру
+            bpy.ops.mesh.primitive_cylinder_add(radius=0.08, depth=H,
+                                                location=(sx + dx * 0.8, sy + dy * 0.8, gz + H / 2))
+            leg = bpy.context.active_object
+            leg.name = "TowerLeg"
+            leg.rotation_euler = (dy * 0.16, -dx * 0.16, 0.0)
+            leg.data.materials.append(metal)
+        bpy.ops.mesh.primitive_cylinder_add(radius=1.3, depth=0.2, location=(sx, sy, gz + H))
+        plat = bpy.context.active_object; plat.name = "TowerPad"; plat.data.materials.append(metal)
+        bpy.ops.mesh.primitive_cylinder_add(radius=0.05, depth=1.2, location=(sx, sy, gz + H + 0.6))
+        mast = bpy.context.active_object; mast.name = "TowerMast"; mast.data.materials.append(metal)
+        bpy.ops.mesh.primitive_uv_sphere_add(radius=0.18, location=(sx, sy, gz + H + 1.3))
+        beacon = bpy.context.active_object; beacon.name = "TowerBeacon"; beacon.data.materials.append(red)
+    except Exception as exc:                          # noqa: BLE001 — вишка не має ламати сцену
+        print("Вишка: не створено —", exc)
+
+
 def build_environment(md, cfg, terrain):
     """Повне середовище 2e2bc5d: рельєф-меш + ліс + фури-чекпоінти + тематичні перешкоди.
     (Світло/небо й дрон/камери — окремо через animate_drone у launcher'і.)"""
@@ -338,5 +363,6 @@ def build_environment(md, cfg, terrain):
     _build_trees(md, cfg, terrain)
     _build_trucks(md, cfg, terrain)
     _build_obstacles(md, cfg, terrain)
+    _build_tower(md, cfg, terrain)                 # вишка на спавні
     _build_mission_markers(md, cfg, terrain)       # аптечка на предметі + людина на цілі
     _build_rain(cfg)                               # ← дощ останнім: збій не зачепить решту

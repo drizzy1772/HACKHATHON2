@@ -155,7 +155,8 @@ def simulate(seed: int, n_trees: int = None, sim_seconds: float = MAX_SIM_SECOND
             "lidar": [round(float(v), 2) for v in lidar],
             "status": status, "boosted": bool(boosted),
             "carrying": bool(_solution._BAT.get("carrying", False)),   # для «прилипання» аптечки
-            "delivered": bool(_solution._BAT.get("mode") in ("to_home",) or _solution._BAT.get("done")),
+            "delivered": bool(_solution._BAT.get("mode") in ("to_home", "charging_home", "to_home2")
+                               or _solution._BAT.get("done")),
         })
         if status != STATUS_RUNNING:
             break
