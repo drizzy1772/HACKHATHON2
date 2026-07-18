@@ -179,13 +179,14 @@ CHARGE_DWELL_TICKS = 90    # тримаємось на станції ~3 с (90 
 # вона ПРИЛИПАЄ) → ЦІЛЬ (везе людині).
 _BAT = {"level": 100.0, "mode": "to_goal", "charge": None, "pickup": None,
         "charge2": None, "home": None, "done": False,
-        "mark": 100, "carrying": False, "dwell": 0, "cdwell": 0}
+        "mark": 100, "carrying": False, "dwell": 0, "cdwell": 0,
+        "trick": 0, "trick_dur": 1, "trick_spins": 0}
 
 
 def _mission_reset(path, charge, pickup) -> None:
     """Новий прогін: повний заряд, точки місії, ще не несемо. home = старт;
     charge2 = зарядка НА ЗВОРОТНОМУ шляху (середина маршруту)."""
-    _BAT.update(level=100.0, mark=100, carrying=False, dwell=0, cdwell=0, done=False)
+    _BAT.update(level=100.0, mark=100, carrying=False, dwell=0, cdwell=0, done=False, trick=0)
     _BAT["charge"] = tuple(charge) if charge else None
     _BAT["pickup"] = tuple(pickup) if pickup else None
     _BAT["home"] = tuple(path[0]) if (pickup and path and len(path) >= 2) else None
@@ -409,6 +410,7 @@ def compute_desired_direction(pos: Vec2, lidar, bin_angles, tracker, stuck,
         if home is not None and math.hypot(goal_pt[0] - px, goal_pt[1] - py) < ARRIVE_R:
             _BAT["mode"] = "to_home"                         # ДОСТАВИВ → повертаємось додому
             _BAT["carrying"] = False                         # аптечку віддали людині
+            _BAT.update(trick=45, trick_dur=45, trick_spins=2)   # ТРЮК: подвійна бочка-перемога
     else:  # ПОВЕРНЕННЯ ДОДОМУ: to_home → charging_home (зарядка!) → to_home2 → done
         home_tr = boost_state.get("home_tracker")
         if home_tr is None or boost_state.get("home_src") is not tracker.path:
@@ -612,6 +614,7 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
                     _BAT["mode"] = "to_pickup" if _BAT["pickup"] else "to_goal"
                 else:                                # charging_home → летимо далі додому
                     _BAT["mode"] = "to_home2"
+                _BAT.update(trick=25, trick_dur=25, trick_spins=1)   # ТРЮК: бочка на злеті зі станції
     elif _BAT["mode"] == "grabbing":
         low_enough = (z - terrain.height_at(x, y)) <= GRAB_CLEARANCE + 0.25
         if low_enough:
@@ -619,11 +622,20 @@ def step_autopilot(state, direction_xy: Vec2, terrain, dt: float,
             if _BAT["dwell"] >= GRAB_TICKS:
                 _BAT["carrying"] = True                  # ЗАБРАЛИ аптечку (вона прилипає)
                 _BAT["mode"] = "to_goal"                 # → веземо до людини
+                _BAT.update(trick=30, trick_dur=30, trick_spins=1)   # ТРЮК: бочка на радощах
     else:
         moved = math.hypot(vx, vy) * dt
         _BAT["level"] = max(0.0, _BAT["level"] - BATTERY_DRAIN * moved)
     for m in BATTERY_LEVELS:                         # оновити рівень індикатора
         if _BAT["mark"] > m >= _BAT["level"]:
             _BAT["mark"] = m
+
+    # ТРЮК: бочка — крен обертається на повний(і) оберт(и) за тривалість трюку.
+    # Суто візуально (колізії рахуються по x,y,z), тож безпечно й видовищно.
+    if _BAT["trick"] > 0:
+        frac = (_BAT["trick_dur"] - _BAT["trick"]) / max(1, _BAT["trick_dur"])
+        roll = 2.0 * math.pi * _BAT["trick_spins"] * frac
+        pitch = -0.25                                # трохи ніс униз для динаміки
+        _BAT["trick"] -= 1
 
     return AutopilotState(x=x, y=y, z=z, vx=vx, vy=vy, vz=vz, yaw=yaw, pitch=pitch, roll=roll)
