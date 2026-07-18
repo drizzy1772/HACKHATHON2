@@ -2229,6 +2229,49 @@ def _selfcheck():
     print("SELFCHECK: replay-тік (5 кадрів, телеметрія+лідар) →", "OK" if ok3 else "FAIL")
 
 
+# ── ГОЛОСОВИЙ МІСТ: Blender слухає команди з файлу (їх пише веб-сервер voice/) ──
+_VOICE_CMD_FILE = str(sim_headless.OUT_DIR / "voice_cmd.txt")
+
+
+def _voice_execute(cmd: str):
+    """Виконати голосову команду: лети / новий маршрут / стоп."""
+    c = cmd.strip().lower()
+    try:
+        if c in ("fly", "лети", "старт", "вперед", "полетіли", "go"):
+            if _RUNTIME.get("trajectory") is None:
+                _load_autonomous_map(SEED)
+            bpy.ops.wm.drone_autonomous('INVOKE_DEFAULT')
+            print("ГОЛОС: лети →", c)
+        elif c in ("route", "маршрут", "побудуй", "новий", "новий маршрут", "rebuild"):
+            import random as _r
+            _RUNTIME["running"] = False
+            _load_autonomous_map(_r.randint(0, 100000))     # нова мапа + безпечний A*-маршрут
+            bpy.ops.wm.drone_autonomous('INVOKE_DEFAULT')
+            print("ГОЛОС: новий маршрут →", c)
+        elif c in ("stop", "стоп", "стій", "зупинись"):
+            _RUNTIME["running"] = False
+            print("ГОЛОС: стоп")
+        else:
+            print("ГОЛОС: невідома команда:", c)
+    except Exception as exc:                                 # noqa: BLE001
+        print("ГОЛОС: помилка виконання:", exc)
+
+
+def _voice_poll():
+    """Таймер: раз на 0.4 с читає файл-команду й виконує, тоді видаляє його."""
+    try:
+        import os
+        if os.path.exists(_VOICE_CMD_FILE):
+            with open(_VOICE_CMD_FILE, encoding="utf-8") as f:
+                cmd = f.read()
+            os.remove(_VOICE_CMD_FILE)
+            if cmd.strip():
+                _voice_execute(cmd)
+    except Exception as exc:                                 # noqa: BLE001
+        print("ГОЛОС: помилка опитування:", exc)
+    return 0.4
+
+
 def main():
     if bpy.app.background:
         build_scene(seed=SEED)      # детермінований сід — відтворювана самоперевірка
@@ -2262,6 +2305,7 @@ def main():
 
     _register_hud()
     bpy.app.timers.register(_autostart, first_interval=0.4)
+    bpy.app.timers.register(_voice_poll, first_interval=1.0)   # слухаємо голосові команди
 
 
 if __name__ == "__main__":

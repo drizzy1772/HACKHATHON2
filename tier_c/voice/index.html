@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="uk">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>🎙️ Голосове керування дроном</title>
+<style>
+  :root { color-scheme: dark; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; font-family: -apple-system, system-ui, sans-serif;
+    background: radial-gradient(circle at 50% 0%, #14213a, #0a0f1e);
+    color: #e8eefc; min-height: 100vh; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; padding: 24px; text-align: center;
+  }
+  h1 { font-size: 1.5rem; margin: 0 0 6px; }
+  p.sub { color: #8aa0c8; margin: 0 0 28px; font-size: .95rem; }
+  #mic {
+    width: 180px; height: 180px; border-radius: 50%; border: none; cursor: pointer;
+    font-size: 4rem; color: #fff; background: linear-gradient(145deg, #2563eb, #1e40af);
+    box-shadow: 0 12px 40px rgba(37,99,235,.5); transition: transform .1s, box-shadow .2s;
+  }
+  #mic:active { transform: scale(.96); }
+  #mic.listening { background: linear-gradient(145deg, #dc2626, #991b1b);
+    box-shadow: 0 0 0 0 rgba(220,38,38,.7); animation: pulse 1.3s infinite; }
+  @keyframes pulse { 70% { box-shadow: 0 0 0 26px rgba(220,38,38,0); }
+                     100% { box-shadow: 0 0 0 0 rgba(220,38,38,0); } }
+  #heard { margin: 24px 0 8px; font-size: 1.25rem; min-height: 1.5em; font-weight: 600; }
+  #status { color: #8aa0c8; font-size: .9rem; min-height: 1.2em; }
+  .cmds { margin-top: 30px; display: flex; gap: 10px; flex-wrap: wrap; justify-content: center; }
+  .cmds button {
+    background: #1b2540; color: #cfe0ff; border: 1px solid #2c3c66; border-radius: 12px;
+    padding: 10px 16px; font-size: 1rem; cursor: pointer;
+  }
+  .cmds button:active { background: #263a63; }
+  .hint { margin-top: 26px; color: #6f84ac; font-size: .82rem; max-width: 440px; line-height: 1.5; }
+  code { background: #1b2540; padding: 1px 6px; border-radius: 5px; }
+</style>
+</head>
+<body>
+  <h1>🚁 Голосове керування дроном</h1>
+  <p class="sub">Натисни мікрофон і скажи команду українською</p>
+
+  <button id="mic" title="Говорити">🎙️</button>
+
+  <div id="heard">—</div>
+  <div id="status">Готово</div>
+
+  <div class="cmds">
+    <button data-cmd="fly">▶ Лети</button>
+    <button data-cmd="route">🧭 Новий маршрут</button>
+    <button data-cmd="stop">⏹ Стоп</button>
+  </div>
+
+  <p class="hint">
+    Команди: «<b>лети</b>» / «<b>старт</b>», «<b>новий маршрут</b>» / «<b>побудуй</b>», «<b>стоп</b>».<br>
+    Кнопки внизу шлють команду без голосу. Розпізнавання мови використовує
+    браузерний рушій (потрібен інтернет). На телефоні мікрофон вимагає HTTPS.
+  </p>
+
+<script>
+const micBtn = document.getElementById('mic');
+const heard  = document.getElementById('heard');
+const statusEl = document.getElementById('status');
+
+// фрази -> канонічна команда
+function toCommand(text) {
+  const t = text.toLowerCase();
+  if (/(лети|старт|вперед|полетіли|поле)/.test(t)) return 'fly';
+  if (/(маршрут|побуд|новий|нову|заново)/.test(t)) return 'route';
+  if (/(стоп|стій|зупин)/.test(t)) return 'stop';
+  return null;
+}
+
+async function sendCommand(cmd, spokenText) {
+  statusEl.textContent = 'Надсилаю: ' + cmd + '…';
+  try {
+    const res = await fetch('/cmd', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: 'cmd=' + encodeURIComponent(cmd)
+    });
+    const txt = await res.text();
+    statusEl.textContent = '✅ Виконано: ' + cmd + (spokenText ? '  («' + spokenText + '»)' : '');
+  } catch (e) {
+    statusEl.textContent = '❌ Немає зв’язку із сервером (запусти server.py)';
+  }
+}
+
+// кнопки
+document.querySelectorAll('.cmds button').forEach(b =>
+  b.addEventListener('click', () => { heard.textContent = b.textContent; sendCommand(b.dataset.cmd, ''); }));
+
+// голос
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (!SR) {
+  statusEl.textContent = 'Браузер не підтримує розпізнавання мови (спробуй Chrome).';
+  micBtn.disabled = true;
+} else {
+  const rec = new SR();
+  rec.lang = 'uk-UA';
+  rec.interimResults = false;
+  rec.maxAlternatives = 1;
+  let listening = false;
+
+  micBtn.addEventListener('click', () => {
+    if (listening) { rec.stop(); return; }
+    try { rec.start(); } catch (e) {}
+  });
+  rec.onstart = () => { listening = true; micBtn.classList.add('listening'); statusEl.textContent = 'Слухаю…'; };
+  rec.onend   = () => { listening = false; micBtn.classList.remove('listening'); };
+  rec.onerror = (e) => { statusEl.textContent = 'Помилка мікрофона: ' + e.error; };
+  rec.onresult = (e) => {
+    const text = e.results[0][0].transcript.trim();
+    heard.textContent = '«' + text + '»';
+    const cmd = toCommand(text);
+    if (cmd) sendCommand(cmd, text);
+    else statusEl.textContent = 'Не зрозумів команду. Скажи: лети / новий маршрут / стоп';
+  };
+}
+</script>
+</body>
+</html>
