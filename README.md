@@ -5,6 +5,13 @@ Production-ready reinforcement learning and pathfinding agent designed for the A
 Pure Python + NumPy + Matplotlib. The core is **tabular** — no neural nets, no GPU.
 A 3000-episode training run takes ~0.2 s; the full test suite ~1 min.
 
+## Demonstration of project:
+
+
+https://github.com/user-attachments/assets/b4e864ff-586f-4f0c-af72-731e19382c77
+
+
+
 ## Tiers
 
 Each tier is self-contained (code, tests, reports, `CONCEPT.md`) and split into a
