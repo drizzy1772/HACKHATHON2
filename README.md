@@ -105,6 +105,6 @@ Path | Description
 
 ## Quick Start & Verification
 
-Activate your environment:
+Activate your environment, Launch Blender:
 ```bash
-source .venv/bin/activate
+source .venv/bin/activate || source .venv/bin/activate && blender tier_c/drone_scene.blend --python tier_c/kinematic_autopilot.py
