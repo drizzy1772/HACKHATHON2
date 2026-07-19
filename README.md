@@ -108,3 +108,7 @@ Path | Description
 1. Activate your environment:
 ```bash
 source .venv/bin/activate
+
+2. How to activate project in Blender:
+source .venv/bin/activate && blender tier_c/drone_scene.blend --python tier_c/kinematic_autopilot.py
+
