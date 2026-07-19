@@ -11,6 +11,13 @@ A 3000-episode training run takes ~0.2 s; the full test suite ~1 min.
 https://github.com/user-attachments/assets/b4e864ff-586f-4f0c-af72-731e19382c77
 
 
+https://github.com/user-attachments/assets/596b23f1-408a-4124-8f64-a6abcd9b27d7
+
+
+https://github.com/user-attachments/assets/6b003457-7eec-416a-b04c-9e9c8a3df638
+
+
+
 
 ## Tiers
 
